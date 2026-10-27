@@ -280,7 +280,70 @@
     return out.sort((a, b) => (a[1] + a[3]).localeCompare(b[1] + b[3]));
   }
 
-  const core = { parseFrame, base45Decode, crc32, Collector, inflate, validPayload, buildIcs, parseIcs };
+  // ---------- Google Calendar API 用の変換(画面と分けてある) ----------
+  // 役場の予定 → Googleの予定(events.import 用)。UIDは .ics の書き出しと同じなので、どちらで入れても二重にならない
+  function officeToGoogle(events, opts){
+    opts = opts || {};
+    const label = opts.label || (src => src || '自分');
+    const seen = new Map();
+    return events.map(e=>{
+      const [src, start, end, st, et, title, loc, note, flags] = e;
+      const last = end || start;
+      const base = [src, start, st || '', title].join('|');
+      const n = (seen.get(base) || 0) + 1; seen.set(base, n);
+      const timed = !!st && !flags.includes('l');
+      const prefix = flags.includes('t') ? '☐ ' : flags.includes('l') ? '(休暇)' : '';
+      const ev = { iCalUID: hashStr(base) + '-' + n + '@yotei-viewer', summary: `[${label(src)}] ${prefix}${title}` };
+      if(timed){
+        let endTime = et;
+        if(!endTime){ const [h, m] = st.split(':').map(Number); endTime = h + 1 > 23 ? '23:59' : `${String(h + 1).padStart(2, '0')}:${String(m).padStart(2, '0')}`; }
+        ev.start = { dateTime: `${start}T${st}:00`, timeZone: 'Asia/Tokyo' };
+        ev.end = { dateTime: `${last}T${endTime}:00`, timeZone: 'Asia/Tokyo' };
+      } else {
+        ev.start = { date: start };
+        ev.end = { date: nextDay(last) };
+        ev.transparency = 'transparent';
+      }
+      if(loc) ev.location = loc;
+      if(note) ev.description = note;
+      // 中身の目印。変わっていなければ送り直さない
+      ev.extendedProperties = { private: { yv: '1', h: hashStr(JSON.stringify([ev.summary, ev.start, ev.end, loc || '', note || ''])) } };
+      return ev;
+    });
+  }
+  // Googleの予定(events.list の items) → 予定ビューアの形式
+  function googleToViewer(items, src){
+    const out = [];
+    (items || []).forEach(it=>{
+      if(!it || it.status === 'cancelled' || !it.start) return;
+      if(it.extendedProperties && it.extendedProperties.private && it.extendedProperties.private.yv) return; // このアプリが入れた役場の予定
+      if(/@yotei-viewer$/.test(it.iCalUID || '')) return;
+      const title = it.summary || '(件名なし)', loc = it.location || '', note = String(it.description || '').replace(/<[^>]+>/g, '').slice(0, 300);
+      if(it.start.date){
+        const s = it.start.date, endEx = (it.end && it.end.date) || nextDay(s);
+        const last = addUtcDays(endEx, -1);
+        out.push([src, s, last > s ? last : '', '', '', title, loc, note, '']);
+        return;
+      }
+      const toJst = iso => { const t = new Date(new Date(iso).getTime() + 9 * 3600e3); return { date: t.toISOString().slice(0, 10), time: t.toISOString().slice(11, 16) }; };
+      const s = toJst(it.start.dateTime), e = it.end && it.end.dateTime ? toJst(it.end.dateTime) : null;
+      let lastDate = e ? e.date : s.date, endTime = e ? e.time : '';
+      if(e && e.time === '00:00' && e.date > s.date){ lastDate = addUtcDays(e.date, -1); endTime = '23:59'; }
+      out.push([src, s.date, lastDate > s.date ? lastDate : '', s.time, endTime, title, loc, note, '']);
+    });
+    return out.sort((a, b) => (a[1] + a[3]).localeCompare(b[1] + b[3]));
+  }
+  function addUtcDays(ds, n){ const d = new Date(ds + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+  // 同期の計画: 送る(新規・変更) / 消す(Googleにあって役場の予定にないもの)
+  function planPush(desired, existing){
+    const have = new Map((existing || []).map(x => [x.iCalUID, x]));
+    const want = new Set(desired.map(d => d.iCalUID));
+    const put = desired.filter(d => { const x = have.get(d.iCalUID); return !x || !x.extendedProperties || !x.extendedProperties.private || x.extendedProperties.private.h !== d.extendedProperties.private.h; });
+    const del = (existing || []).filter(x => !want.has(x.iCalUID) && x.status !== 'cancelled');
+    return { put, del };
+  }
+
+  const core = { parseFrame, base45Decode, crc32, Collector, inflate, validPayload, buildIcs, parseIcs, officeToGoogle, googleToViewer, planPush };
   if(typeof window === 'undefined'){ if(typeof module !== 'undefined') module.exports = core; return; }
 
   // ---------- 保存 ----------
@@ -609,6 +672,7 @@
     calMonth = null; calSel = null;
     renderAll();
     scrollToToday();
+    if(gapiCfg.clientId && getToken()) setTimeout(() => googleSync({ quiet: false }), 3800);
     toast(ok ? `${qrData.e.length}件の予定を取り込みました` : '取り込みましたが、保存できませんでした(次回起動時は消えます)', 3500);
   }
   function stopScan(){
@@ -632,7 +696,7 @@
     const who = ((data && data.r) || []).filter(src => src !== GOOGLE && !prefs.hidden.includes(src)).map(sourceLabel).join('・');
     $('#icsSummary').textContent = qrData ? `今日以降の役場の予定 ${evs.length}件(${who || 'なし'})を書き出します。上の人のボタンで絞り込めます。` : '先に「📷 更新」でPCの予定を取り込むと、書き出せます。';
     $('#icsGo').disabled = !qrData;
-    renderGoogleStatus();
+    renderGoogleStatus(); renderGapiSettings();
     $('#icsSheet').style.display = 'flex';
   }
   async function exportIcs(){
@@ -658,6 +722,151 @@
     toast(`${evs.length}件を ${name} に書き出しました`, 3500);
   }
 
+  // ---------- Googleカレンダーとの自動連携(Google Calendar API) ----------
+  // サーバーは使わない。ブラウザでGoogleにログインして得た1時間有効の鍵(アクセストークン)で、スマホから直接Googleとやり取りする。
+  // ・Google → ビューア: 選んであるカレンダーの予定を読み込んで「Google」として表示
+  // ・役場 → Google: 「役場の予定」カレンダーを作り、PCから取り込んだ予定を写す(取り消されたものは消す)
+  const GAPI_KEY = 'yv.gapi', TOKEN_KEY = 'yv.gtoken';
+  const GAPI = 'https://www.googleapis.com/calendar/v3';
+  const OFFICE_CAL_NAME = '役場の予定';
+  const gapiCfg = Object.assign({ clientId: '', pull: true, push: true, calId: '', lastSync: 0, lastMsg: '' }, load(GAPI_KEY) || {});
+  const saveGapi = () => save(GAPI_KEY, gapiCfg);
+  let gSyncing = false;
+  function getToken(){
+    const t = load(TOKEN_KEY);
+    return t && t.token && t.exp > Date.now() + 60e3 ? t.token : null;
+  }
+  function appUrl(){ return location.origin + location.pathname; }
+  // Googleのログイン画面へ移り、戻ってきたら続きをする(ホーム画面のアプリでも動くよう、別窓ではなく画面ごと移る)
+  function googleSignIn(next){
+    if(!gapiCfg.clientId){ toast('先にクライアントIDを入れてください。', 4000); return; }
+    const state = Math.random().toString(36).slice(2);
+    try{ sessionStorage.setItem('yv.gstate', JSON.stringify({ state, next: next || 'sync' })); }catch(e){}
+    try{ localStorage.setItem('yv.gstate', JSON.stringify({ state, next: next || 'sync' })); }catch(e){}
+    const q = new URLSearchParams({ client_id: gapiCfg.clientId, redirect_uri: appUrl(), response_type: 'token',
+      scope: 'https://www.googleapis.com/auth/calendar', include_granted_scopes: 'true', state });
+    location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + q.toString();
+  }
+  // ログインから戻ってきたとき(URLの # に鍵が付いている)
+  function takeTokenFromUrl(){
+    if(!/access_token=|error=/.test(location.hash)) return null;
+    const h = new URLSearchParams(location.hash.slice(1));
+    history.replaceState(null, '', appUrl());
+    let saved = null;
+    try{ saved = JSON.parse(sessionStorage.getItem('yv.gstate') || localStorage.getItem('yv.gstate') || 'null'); }catch(e){}
+    try{ sessionStorage.removeItem('yv.gstate'); localStorage.removeItem('yv.gstate'); }catch(e){}
+    if(h.get('error')){ toast(`Googleにログインできませんでした(${h.get('error')})`, 5000); return null; }
+    if(!saved || saved.state !== h.get('state')){ toast('ログインの確認に失敗しました。もう一度お試しください。', 5000); return null; }
+    save(TOKEN_KEY, { token: h.get('access_token'), exp: Date.now() + (+h.get('expires_in') || 3600) * 1000 });
+    return saved.next || 'sync';
+  }
+  async function gfetch(path, opts){
+    const token = getToken();
+    if(!token) throw Object.assign(new Error('ログインが切れました'), { code: 'auth' });
+    const res = await fetch(path.startsWith('http') ? path : GAPI + path, Object.assign({}, opts, {
+      headers: Object.assign({ Authorization: 'Bearer ' + token }, opts && opts.body ? { 'Content-Type': 'application/json' } : {})
+    }));
+    if(res.status === 401){ try{ localStorage.removeItem(TOKEN_KEY); }catch(e){} throw Object.assign(new Error('ログインが切れました'), { code: 'auth' }); }
+    if(res.status === 204 || res.status === 410) return null;
+    const body = await res.json().catch(() => null);
+    if(!res.ok) throw new Error((body && body.error && body.error.message) || `Googleの応答 ${res.status}`);
+    return body;
+  }
+  async function listAll(path, params){
+    let items = [], pageToken = '';
+    for(let i = 0; i < 20; i++){
+      const q = new URLSearchParams(Object.assign({}, params, pageToken ? { pageToken } : {}));
+      const r = await gfetch(`${path}?${q}`);
+      items = items.concat((r && r.items) || []);
+      pageToken = r && r.nextPageToken;
+      if(!pageToken) break;
+    }
+    return items;
+  }
+  async function pool(list, n, fn){
+    let i = 0, fails = 0;
+    await Promise.all(Array.from({ length: Math.min(n, list.length) }, async () => {
+      while(i < list.length){ const x = list[i++]; try{ await fn(x); }catch(err){ if(err.code === 'auth') throw err; fails++; } }
+    }));
+    return fails;
+  }
+  const isoJst = ds => `${ds}T00:00:00+09:00`;
+  async function officeCalendarId(){
+    if(gapiCfg.calId){
+      try{ await gfetch(`/calendars/${encodeURIComponent(gapiCfg.calId)}`); return gapiCfg.calId; }catch(err){ if(err.code === 'auth') throw err; }
+    }
+    const list = await listAll('/users/me/calendarList', { minAccessRole: 'owner' });
+    const hit = list.find(c => c.summary === OFFICE_CAL_NAME);
+    const id = hit ? hit.id : (await gfetch('/calendars', { method: 'POST', body: JSON.stringify({ summary: OFFICE_CAL_NAME, timeZone: 'Asia/Tokyo', description: '予定ビューアが自動で書き込みます。ここで直しても次の同期で戻ります。' }) })).id;
+    gapiCfg.calId = id; saveGapi();
+    return id;
+  }
+  async function pullFromGoogle(){
+    const today = ymdLocal(new Date());
+    const cals = (await listAll('/users/me/calendarList', {})).filter(c =>
+      c.selected !== false && c.id !== gapiCfg.calId && c.summary !== OFFICE_CAL_NAME && !/#holiday@group\.v\.calendar\.google\.com$/.test(c.id));
+    let items = [];
+    for(const c of cals){
+      items = items.concat(await listAll(`/calendars/${encodeURIComponent(c.id)}/events`, {
+        singleEvents: 'true', orderBy: 'startTime', maxResults: '2500', timeMin: isoJst(addDaysLocal(today, -31)), timeMax: isoJst(addDaysLocal(today, 400)) }));
+    }
+    const evs = core.googleToViewer(items, GOOGLE);
+    gData = { t: new Date().toISOString(), n: `Google(${cals.length}個のカレンダー)`, e: evs, api: true };
+    save(GOOGLE_KEY, gData);
+    return evs.length;
+  }
+  async function pushToGoogle(){
+    if(!qrData) return null;
+    const today = ymdLocal(new Date());
+    const from = addDaysLocal(today, -7);
+    const desired = core.officeToGoogle(qrData.e.filter(e => (e[2] || e[1]) >= from), { label: sourceLabel });
+    const calId = await officeCalendarId();
+    const existing = await listAll(`/calendars/${encodeURIComponent(calId)}/events`, { maxResults: '2500', timeMin: isoJst(from), showDeleted: 'false' });
+    const plan = core.planPush(desired, existing);
+    const base = `/calendars/${encodeURIComponent(calId)}/events`;
+    const f1 = await pool(plan.put, 4, ev => gfetch(`${base}/import`, { method: 'POST', body: JSON.stringify(ev) }));
+    const f2 = await pool(plan.del, 4, ev => gfetch(`${base}/${encodeURIComponent(ev.id)}`, { method: 'DELETE' }));
+    return { put: plan.put.length - f1, del: plan.del.length - f2, fails: f1 + f2 };
+  }
+  async function googleSync(opts){
+    opts = opts || {};
+    if(gSyncing || !gapiCfg.clientId || (!gapiCfg.pull && !gapiCfg.push)) return;
+    if(!getToken()){ if(opts.interactive) googleSignIn('sync'); else renderGoogleBtn(); return; }
+    gSyncing = true; renderGoogleBtn();
+    const msgs = [];
+    try{
+      if(gapiCfg.pull) msgs.push(`Googleから${await pullFromGoogle()}件`);
+      if(gapiCfg.push && (opts.push !== false)){
+        const r = await pushToGoogle();
+        if(r) msgs.push(`役場の予定を送信 ${r.put}件・削除 ${r.del}件${r.fails ? `(失敗 ${r.fails}件)` : ''}`);
+      }
+      gapiCfg.lastSync = Date.now(); gapiCfg.lastMsg = msgs.join('・'); saveGapi();
+      rebuild(); renderAll();
+      if(!opts.quiet) toast(`Googleと同期しました:${gapiCfg.lastMsg}`, 4000);
+    }catch(err){
+      gapiCfg.lastMsg = `同期できませんでした:${err.message}`; saveGapi();
+      if(err.code === 'auth' && opts.interactive){ googleSignIn('sync'); return; }
+      if(!opts.quiet || err.code !== 'auth') toast(gapiCfg.lastMsg, 5000);
+    }finally{
+      gSyncing = false; renderGoogleBtn(); renderGapiSettings();
+    }
+  }
+  function renderGoogleBtn(){
+    const b = $('#gSyncBtn');
+    b.style.display = gapiCfg.clientId ? '' : 'none';
+    b.classList.toggle('spin', gSyncing);
+    b.classList.toggle('need', !!gapiCfg.clientId && !getToken());
+    b.title = gSyncing ? 'Googleと同期中…' : getToken() ? 'Googleと同期する' : 'Googleにログインして同期する';
+  }
+  function renderGapiSettings(){
+    $('#gClientId').value = gapiCfg.clientId;
+    $('#gPullOn').checked = !!gapiCfg.pull;
+    $('#gPushOn').checked = !!gapiCfg.push;
+    const when = gapiCfg.lastSync ? new Date(gapiCfg.lastSync) : null;
+    $('#gApiStatus').textContent = !gapiCfg.clientId ? 'クライアントIDを入れると使えます(作り方は手順書を見てください)。'
+      : `${getToken() ? 'ログイン中' : 'ログインしていません'}${when ? `・前回 ${when.getMonth()+1}/${when.getDate()} ${String(when.getHours()).padStart(2,'0')}:${String(when.getMinutes()).padStart(2,'0')}` : ''}${gapiCfg.lastMsg ? `\n${gapiCfg.lastMsg}` : ''}`;
+  }
+
   // ---------- Googleカレンダーの予定の読み込み ----------
   function renderGoogleStatus(){
     const el = $('#gStatus');
@@ -677,6 +886,7 @@
     if(!save(GOOGLE_KEY, gData)) toast('保存できませんでした(次回起動時は消えます)', 4000);
     rebuild(); renderAll(); renderGoogleStatus();
     toast(`Googleの予定を${evs.length}件読み込みました`, 3500);
+    if(gapiCfg.pull && gapiCfg.clientId) toast('自動連携の読み込みがオンなので、次の同期でGoogleから読み直した内容に入れ替わります。', 5000);
   }
 
   // ---------- 起動 ----------
@@ -686,6 +896,21 @@
   $('#icsSheet').addEventListener('click', e=>{ if(e.target.id === 'icsSheet') e.target.style.display = 'none'; });
   $('#icsGo').addEventListener('click', exportIcs);
   $('#gPick').addEventListener('click', ()=> $('#gFile').click());
+  $('#gSyncBtn').addEventListener('click', ()=> googleSync({ interactive: true }));
+  $('#gApiSave').addEventListener('click', ()=>{
+    const id = $('#gClientId').value.trim();
+    if(id && !/\.apps\.googleusercontent\.com$/.test(id)){ toast('クライアントIDは「….apps.googleusercontent.com」で終わる文字です。', 5000); return; }
+    if(id !== gapiCfg.clientId){ try{ localStorage.removeItem(TOKEN_KEY); }catch(e){} gapiCfg.calId = ''; }
+    gapiCfg.clientId = id; gapiCfg.pull = $('#gPullOn').checked; gapiCfg.push = $('#gPushOn').checked;
+    saveGapi(); renderGoogleBtn(); renderGapiSettings();
+    if(id) googleSync({ interactive: true });
+  });
+  $('#gApiOff').addEventListener('click', ()=>{
+    try{ localStorage.removeItem(TOKEN_KEY); }catch(e){}
+    gapiCfg.clientId = ''; gapiCfg.calId = ''; saveGapi();
+    renderGoogleBtn(); renderGapiSettings();
+    toast('自動連携をやめました(Googleにある「役場の予定」カレンダーは残ります)', 4000);
+  });
   $('#gFile').addEventListener('change', e=>{ importGoogle(e.target.files[0]); e.target.value = ''; });
   $('#gClear').addEventListener('click', ()=>{
     gData = null;
@@ -712,7 +937,18 @@
   }, { passive: true });
   window.addEventListener('resize', updateHeadHeight);
   // 日付が変わったら(朝アプリを開いたときなど)表示を今日に合わせる
-  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ renderUpdated(); render(); } });
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.hidden) return;
+    renderUpdated(); render(); renderGoogleBtn();
+    // 開いたとき、ログインが生きていて前回から10分以上たっていれば、黙って同期する
+    if(gapiCfg.clientId && getToken() && Date.now() - gapiCfg.lastSync > 10 * 60e3) googleSync({ quiet: true });
+  });
   renderAll();
+  renderGoogleBtn();
+  {
+    const next = takeTokenFromUrl();
+    if(next) googleSync({ quiet: false });
+    else if(gapiCfg.clientId && getToken() && Date.now() - gapiCfg.lastSync > 10 * 60e3) googleSync({ quiet: true });
+  }
   if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 })();

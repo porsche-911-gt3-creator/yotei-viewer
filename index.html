@@ -48,6 +48,12 @@
   .updated.stale{ color:var(--warn-ink); }
   .top-r{ display:flex; gap:6px; align-items:center; flex:0 0 auto; }
   .icon-btn{ border:1px solid var(--line); background:var(--card); border-radius:9px; min-width:38px; min-height:36px; font-size:17px; padding:0; }
+  .icon-btn{ position:relative; }
+  .icon-btn.spin span{ display:inline-block; animation:spin 1s linear infinite; }
+  .icon-btn.need::after{ content:''; position:absolute; top:4px; right:4px; width:8px; height:8px; border-radius:50%; background:var(--warn-ink); }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .sheet .field{ width:100%; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:8px; padding:8px; font-size:14px; }
+  .sheet label.ck{ display:flex; gap:8px; align-items:center; margin-top:6px; }
   .sheet{ position:fixed; inset:0; z-index:25; background:rgba(0,0,0,.45); display:none; align-items:flex-end; justify-content:center; }
   .sheet .box{ background:var(--card); color:var(--ink); width:100%; max-width:560px; border-radius:16px 16px 0 0;
     padding:18px 16px calc(18px + env(safe-area-inset-bottom)); max-height:85vh; overflow-y:auto; line-height:1.7; font-size:14px; }
@@ -151,6 +157,7 @@
       <div class="updated" id="updated">まだ取り込んでいません</div>
     </div>
     <div class="top-r">
+    <button class="icon-btn" id="gSyncBtn" type="button" aria-label="Googleと同期" style="display:none;"><span>🔄</span></button>
     <button class="icon-btn" id="icsBtn" type="button" aria-label="Googleカレンダーと連携" title="Googleカレンダーと連携">📅</button>
     <div class="seg" id="viewSeg" role="group" aria-label="表示の切り替え">
       <button type="button" data-view="list" aria-pressed="true">一覧</button>
@@ -176,7 +183,15 @@
 </div>
 <div class="sheet" id="icsSheet" role="dialog" aria-label="Googleカレンダーと連携">
   <div class="box">
-    <h2>📅 Googleカレンダーの予定を並べる</h2>
+    <h2>🔄 Googleと自動連携</h2>
+    <div id="gApiStatus" class="note" style="white-space:pre-line;"></div>
+    <input class="field" id="gClientId" placeholder="クライアントID(….apps.googleusercontent.com)" autocomplete="off" autocapitalize="off" spellcheck="false" style="margin-top:6px;">
+    <label class="ck"><input type="checkbox" id="gPullOn"> Googleの予定をここに表示する</label>
+    <label class="ck"><input type="checkbox" id="gPushOn"> 役場の予定をGoogleの「役場の予定」カレンダーへ写す</label>
+    <div class="btns"><button type="button" id="gApiOff">連携をやめる</button><button type="button" class="primary" id="gApiSave">保存して同期</button></div>
+    <p class="note">右上の🔄で同期します。ログインは1時間有効で、その間はアプリを開いたときやQRで更新したときに自動で同期します。切れたら🔄を押すとGoogleのログイン画面に移ります。</p>
+    <hr style="border:none; border-top:1px solid var(--line); margin:16px 0 8px;">
+    <h2>📅 .icsファイルで読み込む</h2>
     <div id="gStatus" class="note"></div>
     <div class="btns" style="margin-top:8px;"><button type="button" class="primary" id="gPick">.icsファイルを読み込む</button><button type="button" id="gClear">Googleの予定を消す</button></div>
     <input type="file" id="gFile" accept=".ics,text/calendar" hidden>
