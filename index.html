@@ -42,10 +42,13 @@
   button{ font:inherit; color:inherit; }
   header{ position:sticky; top:0; z-index:5; background:var(--bg);
     padding:calc(10px + env(safe-area-inset-top)) 16px 8px; border-bottom:1px solid var(--line); }
-  .top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .top{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
   h1{ font-size:20px; margin:0; letter-spacing:.02em; }
   .updated{ font-size:12px; color:var(--sub); margin-top:2px; }
   .updated.stale{ color:var(--warn-ink); }
+  .seg{ display:flex; flex:0 0 auto; background:var(--line); border-radius:9px; padding:2px; }
+  .seg button{ border:none; background:none; border-radius:7px; padding:6px 10px; white-space:nowrap; font-size:13px; min-height:32px; color:var(--sub); }
+  .seg button[aria-pressed="true"]{ background:var(--card); color:var(--ink); font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,.12); }
   .chips{ display:flex; gap:6px; overflow-x:auto; margin-top:8px; padding-bottom:2px; scrollbar-width:none; }
   .chips::-webkit-scrollbar{ display:none; }
   .chip{ flex:0 0 auto; border:1px solid var(--line); background:var(--card); border-radius:999px;
@@ -98,6 +101,30 @@
   #scan .grid i.ok{ background:#7cd38a; }
   #scan .cancel{ display:block; margin:6px auto 0; background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.4); color:#fff;
     border-radius:999px; padding:10px 28px; font-size:15px; }
+  /* カレンダー表示 */
+  .cal-nav{ display:flex; align-items:center; justify-content:space-between; margin-top:12px; }
+  .cal-nav .m{ font-size:17px; font-weight:700; }
+  .cal-nav button{ border:1px solid var(--line); background:var(--card); border-radius:10px; min-width:44px; min-height:38px; font-size:18px; }
+  .cal-nav button:disabled{ opacity:.3; }
+  .cal{ display:grid; grid-template-columns:repeat(7, minmax(0, 1fr)); margin-top:8px; background:var(--card);
+    border:1px solid var(--line); border-radius:12px; overflow:hidden; touch-action:pan-y; }
+  .cal .wd{ text-align:center; font-size:11px; color:var(--sub); padding:4px 0; border-bottom:1px solid var(--line); }
+  .cal .wd.sun{ color:var(--sun); } .cal .wd.sat{ color:var(--sat); }
+  .cell{ min-height:74px; border:none; border-top:1px solid var(--line); border-left:1px solid var(--line); background:none;
+    padding:2px 2px 3px; text-align:left; display:flex; flex-direction:column; gap:1px; min-width:0; }
+  .cell:nth-child(7n+1){ border-left:none; }
+  .cell.week1{ border-top:none; }
+  .cell .n{ font-size:12px; font-weight:600; line-height:1.4; padding-left:2px; font-variant-numeric:tabular-nums; }
+  .cell.sun .n, .cell.hol .n{ color:var(--sun); } .cell.sat .n{ color:var(--sat); }
+  .cell.out{ opacity:.35; }
+  .cell.today{ background:var(--today); }
+  .cell.today .n{ display:inline-block; }
+  .cell.sel{ box-shadow:inset 0 0 0 2px var(--accent); }
+  .cell .b{ display:block; font-size:10px; line-height:1.35; white-space:nowrap; overflow:hidden; text-overflow:clip;
+    border-left:3px solid; padding-left:2px; border-radius:1px; }
+  .cell .b.done{ text-decoration:line-through; color:var(--sub); }
+  .cell .more{ font-size:10px; color:var(--sub); padding-left:2px; }
+  .sel-day{ margin-top:12px; }
   .toast{ position:fixed; left:50%; top:calc(14px + env(safe-area-inset-top)); transform:translateX(-50%); z-index:30;
     background:var(--ink); color:var(--bg); border-radius:10px; padding:10px 14px; font-size:14px; display:none; max-width:92vw; }
 </style>
@@ -108,6 +135,10 @@
     <div>
       <h1>予定</h1>
       <div class="updated" id="updated">まだ取り込んでいません</div>
+    </div>
+    <div class="seg" id="viewSeg" role="group" aria-label="表示の切り替え">
+      <button type="button" data-view="list" aria-pressed="true">一覧</button>
+      <button type="button" data-view="cal" aria-pressed="false">カレンダー</button>
     </div>
   </div>
   <div class="chips" id="chips"></div>

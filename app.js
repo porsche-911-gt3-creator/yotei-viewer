@@ -85,7 +85,9 @@
 
   let data = load(DATA_KEY);
   if(!validPayload(data)) data = null;
-  const prefs = Object.assign({ hidden: [] }, load(PREF_KEY) || {});
+  const prefs = Object.assign({ hidden: [], view: 'list' }, load(PREF_KEY) || {});
+  let calMonth = null;   // カレンダーで表示中の月(YYYY-MM)
+  let calSel = null;     // カレンダーで選んだ日(YYYY-MM-DD)
   let showPast = false;
   let query = '';
 
@@ -129,7 +131,7 @@
       const src = b.dataset.src;
       prefs.hidden = prefs.hidden.includes(src) ? prefs.hidden.filter(x => x !== src) : prefs.hidden.concat(src);
       save(PREF_KEY, prefs);
-      renderChips(); renderList();
+      renderChips(); render();
     }));
   }
   function evHtml(e){
@@ -143,53 +145,65 @@
       ${meta ? `<div class="meta">${esc(meta)}</div>` : ''}</div>
     </div>`;
   }
-  function renderList(){
-    const list = $('#list');
-    if(!data){
-      list.innerHTML = `<div class="welcome"><h2>はじめての方へ</h2>
-        <ol>
-          <li>このページを <b>ホーム画面に追加</b> します(iPhoneは共有ボタン →「ホーム画面に追加」)。</li>
-          <li>役場PCのグループウェアで、カレンダーの <b>「📱 スマホへ送る」</b> を押します。</li>
-          <li>下の <b>「📷 更新」</b> を押して、PCの画面にかざします。</li>
-        </ol>
-        <p style="margin:8px 0 0; color:var(--sub); font-size:13px;">予定はこのスマホの中だけに保存され、どこにも送られません。</p></div>`;
-      return;
-    }
-    const today = ymd(new Date());
+  // 絞り込み(人・検索語)を通った予定を、日ごとに分ける。複数日の予定は各日に入れる
+  function collectByDay(from, to){
     const q = query.trim().toLowerCase();
-    const from = showPast ? data.f : (today > data.f ? today : data.f);
     const byDay = new Map();
     data.e.forEach(e=>{
       if(prefs.hidden.includes(e[0])) return;
       if(q && !`${e[5]} ${e[6]} ${e[7]}`.toLowerCase().includes(q)) return;
       const s = e[1], last = e[2] || e[1];
       let ds = s < from ? from : s;
-      for(let guard = 0; ds <= last && ds <= data.to && guard < 400; guard++){
+      for(let guard = 0; ds <= last && ds <= to && guard < 400; guard++){
         if(!byDay.has(ds)) byDay.set(ds, []);
         byDay.get(ds).push(e);
         ds = addDays(ds, 1);
       }
     });
+    return byDay;
+  }
+  const timeKey = e => (e[8].includes('l') || !e[3]) ? '' : e[3];
+  const sortEvents = evs => evs.slice().sort((a, b) => timeKey(a).localeCompare(timeKey(b)));
+  function welcomeHtml(){
+    return `<div class="welcome"><h2>はじめての方へ</h2>
+        <ol>
+          <li>このページを <b>ホーム画面に追加</b> します(iPhoneは共有ボタン →「ホーム画面に追加」)。</li>
+          <li>役場PCのグループウェアで、カレンダーの <b>「📱 スマホへ送る」</b> を押します。</li>
+          <li>下の <b>「📷 更新」</b> を押して、PCの画面にかざします。</li>
+        </ol>
+        <p style="margin:8px 0 0; color:var(--sub); font-size:13px;">予定はこのスマホの中だけに保存され、どこにも送られません。</p></div>`;
+  }
+  function staleHtml(){
+    const hours = (Date.now() - new Date(data.t).getTime()) / 36e5;
+    return hours >= 24 ? `<div class="notice">最後の更新から${Math.floor(hours / 24)}日たっています。予定が変わっているかもしれません。PCの画面から更新してください。</div>` : '';
+  }
+  function dayHeadHtml(ds, today){
+    const d = parse(ds), wd = d.getDay();
+    const hol = (data.h || {})[ds];
+    const rel = ds === today ? '今日' : ds === addDays(today, 1) ? '明日' : '';
+    return `<div class="day-h${wd === 0 ? ' sun' : wd === 6 ? ' sat' : ''}${hol ? ' hol-day' : ''}">
+          <span class="d">${d.getMonth()+1}月${d.getDate()}日(${WD[wd]})</span>
+          ${rel ? `<span class="badge">${rel}</span>` : ''}${hol ? `<span class="hol">${esc(hol)}</span>` : ''}
+        </div>`;
+  }
+  function render(){ if(prefs.view === 'cal') renderCal(); else renderList(); }
+
+  function renderList(){
+    const list = $('#list');
+    if(!data){ list.innerHTML = welcomeHtml(); return; }
+    const today = ymd(new Date());
+    const q = query.trim().toLowerCase();
+    const from = showPast ? data.f : (today > data.f ? today : data.f);
+    const byDay = collectByDay(from, data.to);
     if(!q && today >= data.f && today <= data.to && !byDay.has(today)) byDay.set(today, []);
     const days = Array.from(byDay.keys()).sort();
-    let html = '';
-    const hours = (Date.now() - new Date(data.t).getTime()) / 36e5;
-    if(hours >= 24) html += `<div class="notice">最後の更新から${Math.floor(hours / 24)}日たっています。予定が変わっているかもしれません。PCの画面から更新してください。</div>`;
+    let html = staleHtml();
     if(!showPast && !q && data.f < today) html += `<button class="past-btn" id="pastBtn" type="button">過去1週間の予定も表示</button>`;
     if(!days.length) html += `<div class="welcome">${q ? '見つかりませんでした。' : '表示する予定はありません。'}</div>`;
     days.forEach(ds=>{
-      const d = parse(ds), wd = d.getDay();
-      const hol = (data.h || {})[ds];
-      const rel = ds === today ? '今日' : ds === addDays(today, 1) ? '明日' : '';
-      const evs = byDay.get(ds).slice().sort((a, b)=>{
-        const ka = (a[8].includes('l') || !a[3]) ? '' : a[3], kb = (b[8].includes('l') || !b[3]) ? '' : b[3];
-        return ka.localeCompare(kb);
-      });
+      const evs = sortEvents(byDay.get(ds));
       html += `<section class="day${ds === today ? ' is-today' : ''}" data-day="${ds}">
-        <div class="day-h${wd === 0 ? ' sun' : wd === 6 ? ' sat' : ''}${hol ? ' hol-day' : ''}">
-          <span class="d">${d.getMonth()+1}月${d.getDate()}日(${WD[wd]})</span>
-          ${rel ? `<span class="badge">${rel}</span>` : ''}${hol ? `<span class="hol">${esc(hol)}</span>` : ''}
-        </div>
+        ${dayHeadHtml(ds, today)}
         <div class="cards">${evs.length ? evs.map(evHtml).join('') : '<div class="empty-day">予定はありません</div>'}</div>
       </section>`;
     });
@@ -198,14 +212,85 @@
     if(past) past.addEventListener('click', ()=>{ showPast = true; renderList(); });
     updateHeadHeight();
   }
+  // ---------- カレンダー表示(月) ----------
+  const monthOf = ds => ds.slice(0, 7);
+  function shiftMonth(ym, n){ const d = parse(ym + '-01'); d.setMonth(d.getMonth() + n); return ymd(d).slice(0, 7); }
+  function renderCal(){
+    const list = $('#list');
+    if(!data){ list.innerHTML = welcomeHtml(); return; }
+    const today = ymd(new Date());
+    const minM = monthOf(data.f), maxM = monthOf(data.to);
+    if(!calMonth) calMonth = monthOf(today < data.f ? data.f : today > data.to ? data.to : today);
+    if(calMonth < minM) calMonth = minM;
+    if(calMonth > maxM) calMonth = maxM;
+    if(!calSel || monthOf(calSel) !== calMonth) calSel = monthOf(today) === calMonth ? today : calMonth + '-01';
+    // 日曜はじまりで6週ぶん(前後の月の日は薄く)
+    const first = parse(calMonth + '-01');
+    const start = addDays(calMonth + '-01', -first.getDay());
+    const weeks = Math.ceil((first.getDay() + new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate()) / 7);
+    const end = addDays(start, weeks * 7 - 1);
+    const byDay = collectByDay(start, end);
+    const [y, m] = calMonth.split('-').map(Number);
+    let html = staleHtml();
+    html += `<div class="cal-nav">
+      <button type="button" id="calPrev" aria-label="前の月"${calMonth <= minM ? ' disabled' : ''}>‹</button>
+      <span class="m">${y}年${m}月</span>
+      <button type="button" id="calNext" aria-label="次の月"${calMonth >= maxM ? ' disabled' : ''}>›</button>
+    </div><div class="cal" id="calGrid">`;
+    html += WD.map((w, i) => `<div class="wd${i === 0 ? ' sun' : i === 6 ? ' sat' : ''}">${w}</div>`).join('');
+    for(let i = 0, ds = start; i < weeks * 7; i++, ds = addDays(ds, 1)){
+      const d = parse(ds), wd = d.getDay();
+      const evs = sortEvents(byDay.get(ds) || []);
+      const inRange = ds >= data.f && ds <= data.to;
+      const cls = ['cell', i < 7 ? 'week1' : '', wd === 0 ? 'sun' : wd === 6 ? 'sat' : '', (data.h || {})[ds] ? 'hol' : '',
+        monthOf(ds) !== calMonth || !inRange ? 'out' : '', ds === today ? 'today' : '', ds === calSel ? 'sel' : ''].filter(Boolean).join(' ');
+      const shown = evs.slice(0, 3).map(e => `<span class="b${e[8].includes('d') ? ' done' : ''}" style="border-color:${sourceColor(e[0])}">${esc(e[5])}</span>`).join('');
+      const more = evs.length > 3 ? `<span class="more">+${evs.length - 3}</span>` : '';
+      const label = `${d.getMonth()+1}月${d.getDate()}日 予定${evs.length}件`;
+      html += `<button type="button" class="${cls}" data-day="${ds}" aria-label="${label}"><span class="n">${d.getDate()}</span>${shown}${more}</button>`;
+    }
+    html += `</div>`;
+    // 選んだ日の予定
+    const selEvs = sortEvents(byDay.get(calSel) || []);
+    html += `<section class="day sel-day${calSel === today ? ' is-today' : ''}">${dayHeadHtml(calSel, today)}
+      <div class="cards">${selEvs.length ? selEvs.map(evHtml).join('') : '<div class="empty-day">予定はありません</div>'}</div></section>`;
+    list.innerHTML = html;
+    $('#calPrev').addEventListener('click', ()=>{ calMonth = shiftMonth(calMonth, -1); calSel = null; renderCal(); });
+    $('#calNext').addEventListener('click', ()=>{ calMonth = shiftMonth(calMonth, 1); calSel = null; renderCal(); });
+    list.querySelectorAll('.cell').forEach(c => c.addEventListener('click', ()=>{
+      const ds = c.dataset.day;
+      if(monthOf(ds) !== calMonth){ calMonth = monthOf(ds); }
+      calSel = ds; renderCal();
+    }));
+    // 左右にスワイプで月を送る
+    const grid = $('#calGrid');
+    let sx = null, sy = null;
+    grid.addEventListener('touchstart', e => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: true });
+    grid.addEventListener('touchend', e => {
+      if(sx == null) return;
+      const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+      sx = null;
+      if(Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      const next = shiftMonth(calMonth, dx < 0 ? 1 : -1);
+      if(next < minM || next > maxM) return;
+      calMonth = next; calSel = null; renderCal();
+    }, { passive: true });
+    updateHeadHeight();
+  }
+  function renderViewSeg(){
+    document.querySelectorAll('#viewSeg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === prefs.view)));
+    $('#todayBtn').style.display = 'none';
+  }
+
   function updateHeadHeight(){
     document.documentElement.style.setProperty('--head-h', $('#head').offsetHeight + 'px');
   }
   function scrollToToday(){
+    if(prefs.view === 'cal'){ calMonth = null; calSel = null; renderCal(); window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     const el = document.querySelector('.day.is-today') || document.querySelector('.day');
     if(el) window.scrollTo({ top: el.offsetTop - $('#head').offsetHeight - 4, behavior: 'smooth' });
   }
-  function renderAll(){ renderUpdated(); renderChips(); renderList(); }
+  function renderAll(){ renderUpdated(); renderViewSeg(); renderChips(); render(); }
 
   let toastTimer = null;
   function toast(msg, ms){
@@ -297,6 +382,7 @@
     data = payload;
     const ok = save(DATA_KEY, data);
     showPast = false;
+    calMonth = null; calSel = null;
     renderAll();
     scrollToToday();
     toast(ok ? `${data.e.length}件の予定を取り込みました` : '取り込みましたが、保存できませんでした(次回起動時は消えます)', 3500);
@@ -314,15 +400,24 @@
   $('#scanBtn').addEventListener('click', startScan);
   $('#scanCancel').addEventListener('click', stopScan);
   $('#todayBtn').addEventListener('click', scrollToToday);
-  $('#search').addEventListener('input', e=>{ query = e.target.value; renderList(); });
+  $('#search').addEventListener('input', e=>{ query = e.target.value; render(); });
+  document.querySelectorAll('#viewSeg button').forEach(b => b.addEventListener('click', ()=>{
+    if(prefs.view === b.dataset.view) return;
+    prefs.view = b.dataset.view;
+    save(PREF_KEY, prefs);
+    renderViewSeg(); render();
+    window.scrollTo({ top: 0 });
+    if(prefs.view === 'list') scrollToToday();
+  }));
   window.addEventListener('scroll', ()=>{
+    if(prefs.view === 'cal') return;
     const t = document.querySelector('.day.is-today');
     const off = t ? Math.abs(t.getBoundingClientRect().top - $('#head').offsetHeight) > 300 : false;
     $('#todayBtn').style.display = off ? 'block' : 'none';
   }, { passive: true });
   window.addEventListener('resize', updateHeadHeight);
   // 日付が変わったら(朝アプリを開いたときなど)表示を今日に合わせる
-  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ renderUpdated(); renderList(); } });
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ renderUpdated(); render(); } });
   renderAll();
   if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 })();
