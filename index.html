@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>予定ビューア</title>
+<meta name="description" content="役場のグループウェアの予定を、画面のQRから取り込んで見るアプリ">
+<meta name="theme-color" content="#2f5d3a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="予定">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+  :root{
+    --bg:#f6f4ee; --card:#ffffff; --ink:#24231f; --sub:#6b6959; --line:#e4e0d3;
+    --accent:#2f5d3a; --accent-ink:#ffffff; --today:#fff6d6; --sun:#c0392b; --sat:#2d64b3;
+    --warn-bg:#fff1dd; --warn-ink:#8a4b00; --who-ink:#ffffff;
+    --c-me:#5c6b73; --c-1:#b0413e; --c-2:#2d64b3; --c-3:#3f7f4a; --c-4:#7a5aa6; --c-5:#b06a1f; --c-6:#1f8a8a; --c-7:#a3487e; --c-8:#6b7a2a;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#151614; --card:#1f201d; --ink:#ecebe5; --sub:#a3a194; --line:#33342f;
+      --accent:#6fae7c; --accent-ink:#10140f; --today:#2d2a1b; --sun:#ef7f73; --sat:#7fa8ec;
+      --warn-bg:#3a2a12; --warn-ink:#f2c27d; --who-ink:#14150f;
+      --c-me:#9aa9b1; --c-1:#e07c78; --c-2:#7fa8ec; --c-3:#7cc489; --c-4:#b79ae0; --c-5:#e6a35c; --c-6:#5cc4c4; --c-7:#e08bbd; --c-8:#b3c46a;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#151614; --card:#1f201d; --ink:#ecebe5; --sub:#a3a194; --line:#33342f;
+    --accent:#6fae7c; --accent-ink:#10140f; --today:#2d2a1b; --sun:#ef7f73; --sat:#7fa8ec;
+    --warn-bg:#3a2a12; --warn-ink:#f2c27d; --who-ink:#14150f;
+    --c-me:#9aa9b1; --c-1:#e07c78; --c-2:#7fa8ec; --c-3:#7cc489; --c-4:#b79ae0; --c-5:#e6a35c; --c-6:#5cc4c4; --c-7:#e08bbd; --c-8:#b3c46a;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", sans-serif;
+    -webkit-text-size-adjust:100%; }
+  body{ padding-bottom:calc(84px + env(safe-area-inset-bottom)); }
+  button{ font:inherit; color:inherit; }
+  header{ position:sticky; top:0; z-index:5; background:var(--bg);
+    padding:calc(10px + env(safe-area-inset-top)) 16px 8px; border-bottom:1px solid var(--line); }
+  .top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  h1{ font-size:20px; margin:0; letter-spacing:.02em; }
+  .updated{ font-size:12px; color:var(--sub); margin-top:2px; }
+  .updated.stale{ color:var(--warn-ink); }
+  .chips{ display:flex; gap:6px; overflow-x:auto; margin-top:8px; padding-bottom:2px; scrollbar-width:none; }
+  .chips::-webkit-scrollbar{ display:none; }
+  .chip{ flex:0 0 auto; border:1px solid var(--line); background:var(--card); border-radius:999px;
+    padding:6px 12px; font-size:13px; display:flex; align-items:center; gap:6px; min-height:34px; }
+  .chip .dot{ width:8px; height:8px; border-radius:50%; }
+  .chip[aria-pressed="false"]{ opacity:.45; }
+  .search{ margin-top:8px; width:100%; border:1px solid var(--line); background:var(--card); color:var(--ink);
+    border-radius:10px; padding:8px 10px; font-size:16px; }
+  main{ padding:0 16px; }
+  .notice{ background:var(--warn-bg); color:var(--warn-ink); border-radius:10px; padding:10px 12px; font-size:13px; margin:12px 0 0; line-height:1.6; }
+  .past-btn{ display:block; margin:12px auto 0; background:none; border:1px dashed var(--line); color:var(--sub);
+    border-radius:10px; padding:8px 14px; font-size:13px; }
+  .day{ margin-top:14px; }
+  .day-h{ position:sticky; top:var(--head-h, 120px); z-index:2; background:var(--bg);
+    display:flex; align-items:baseline; gap:8px; padding:6px 0 4px; font-weight:700; font-size:15px; }
+  .day-h .badge{ font-size:11px; font-weight:700; background:var(--accent); color:var(--accent-ink); border-radius:6px; padding:1px 6px; }
+  .day-h .hol{ font-size:12px; font-weight:400; color:var(--sun); }
+  .day-h.sun .d, .day-h.hol-day .d{ color:var(--sun); }
+  .day-h.sat .d{ color:var(--sat); }
+  .day.is-today .cards{ background:var(--today); }
+  .cards{ background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .empty-day{ padding:12px; font-size:13px; color:var(--sub); }
+  .ev{ display:grid; grid-template-columns:62px 1fr; gap:10px; padding:10px 12px; border-top:1px solid var(--line); }
+  .ev:first-child{ border-top:none; }
+  .ev .tm{ font-variant-numeric:tabular-nums; font-size:14px; font-weight:600; line-height:1.3; }
+  .ev .tm small{ display:block; font-weight:400; color:var(--sub); font-size:12px; }
+  .ev .ti{ font-size:15px; line-height:1.45; word-break:break-word; }
+  .ev .who{ display:inline-block; font-size:11px; font-weight:700; color:var(--who-ink); border-radius:5px; padding:1px 6px; margin-right:6px; vertical-align:1px; }
+  .ev .meta{ font-size:12.5px; color:var(--sub); margin-top:2px; white-space:pre-line; line-height:1.5; }
+  .ev.done .ti{ text-decoration:line-through; color:var(--sub); }
+  .ev.leave .ti{ color:var(--sub); }
+  .welcome{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-top:16px; line-height:1.8; font-size:14px; }
+  .welcome h2{ font-size:16px; margin:0 0 6px; }
+  .welcome ol{ margin:6px 0 0; padding-left:20px; }
+  .fab{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(16px + env(safe-area-inset-bottom)); z-index:6;
+    background:var(--accent); color:var(--accent-ink); border:none; border-radius:999px; padding:14px 26px; font-size:16px; font-weight:700;
+    box-shadow:0 6px 18px rgba(0,0,0,.22); display:flex; align-items:center; gap:8px; }
+  .today-btn{ position:fixed; right:16px; bottom:calc(22px + env(safe-area-inset-bottom)); z-index:6; border:1px solid var(--line);
+    background:var(--card); border-radius:999px; padding:8px 12px; font-size:13px; display:none; }
+  /* 読み取り画面 */
+  #scan{ position:fixed; inset:0; z-index:20; background:#000; display:none; flex-direction:column; color:#fff; }
+  #scan video{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  #scan .frame{ position:absolute; left:50%; top:45%; width:min(78vw, 60vh); aspect-ratio:1; transform:translate(-50%,-50%);
+    border:3px solid rgba(255,255,255,.85); border-radius:18px; box-shadow:0 0 0 100vmax rgba(0,0,0,.35); }
+  #scan .panel{ position:absolute; left:0; right:0; bottom:0; padding:14px 16px calc(16px + env(safe-area-inset-bottom));
+    background:linear-gradient(transparent, rgba(0,0,0,.85) 30%); }
+  #scan .msg{ font-size:15px; text-align:center; min-height:1.5em; }
+  #scan .grid{ display:flex; flex-wrap:wrap; gap:3px; justify-content:center; margin:10px 0; }
+  #scan .grid i{ width:10px; height:10px; border-radius:2px; background:rgba(255,255,255,.25); }
+  #scan .grid i.ok{ background:#7cd38a; }
+  #scan .cancel{ display:block; margin:6px auto 0; background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.4); color:#fff;
+    border-radius:999px; padding:10px 28px; font-size:15px; }
+  .toast{ position:fixed; left:50%; top:calc(14px + env(safe-area-inset-top)); transform:translateX(-50%); z-index:30;
+    background:var(--ink); color:var(--bg); border-radius:10px; padding:10px 14px; font-size:14px; display:none; max-width:92vw; }
+</style>
+</head>
+<body>
+<header id="head">
+  <div class="top">
+    <div>
+      <h1>予定</h1>
+      <div class="updated" id="updated">まだ取り込んでいません</div>
+    </div>
+  </div>
+  <div class="chips" id="chips"></div>
+  <input class="search" id="search" type="search" placeholder="件名・場所で探す" enterkeyhint="search" autocomplete="off">
+</header>
+<main id="list"></main>
+<button class="today-btn" id="todayBtn" type="button">今日へ</button>
+<button class="fab" id="scanBtn" type="button">📷 更新</button>
+
+<div id="scan" role="dialog" aria-label="QRを読み取る">
+  <video id="video" playsinline muted autoplay></video>
+  <div class="frame"></div>
+  <div class="panel">
+    <div class="msg" id="scanMsg">PCの画面のQRにかざしてください</div>
+    <div class="grid" id="scanGrid"></div>
+    <button class="cancel" id="scanCancel" type="button">やめる</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<canvas id="work" hidden></canvas>
+
+<script src="jsQR.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
