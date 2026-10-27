@@ -18,21 +18,21 @@
     --bg:#f6f4ee; --card:#ffffff; --ink:#24231f; --sub:#6b6959; --line:#e4e0d3;
     --accent:#2f5d3a; --accent-ink:#ffffff; --today:#fff6d6; --sun:#c0392b; --sat:#2d64b3;
     --warn-bg:#fff1dd; --warn-ink:#8a4b00; --who-ink:#ffffff;
-    --c-me:#5c6b73; --c-1:#b0413e; --c-2:#2d64b3; --c-3:#3f7f4a; --c-4:#7a5aa6; --c-5:#b06a1f; --c-6:#1f8a8a; --c-7:#a3487e; --c-8:#6b7a2a;
+    --c-me:#5c6b73; --c-1:#b0413e; --c-2:#2d64b3; --c-3:#3f7f4a; --c-4:#7a5aa6; --c-5:#b06a1f; --c-6:#1f8a8a; --c-7:#a3487e; --c-8:#6b7a2a; --c-google:#1a73e8;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
       --bg:#151614; --card:#1f201d; --ink:#ecebe5; --sub:#a3a194; --line:#33342f;
       --accent:#6fae7c; --accent-ink:#10140f; --today:#2d2a1b; --sun:#ef7f73; --sat:#7fa8ec;
       --warn-bg:#3a2a12; --warn-ink:#f2c27d; --who-ink:#14150f;
-      --c-me:#9aa9b1; --c-1:#e07c78; --c-2:#7fa8ec; --c-3:#7cc489; --c-4:#b79ae0; --c-5:#e6a35c; --c-6:#5cc4c4; --c-7:#e08bbd; --c-8:#b3c46a;
+      --c-me:#9aa9b1; --c-1:#e07c78; --c-2:#7fa8ec; --c-3:#7cc489; --c-4:#b79ae0; --c-5:#e6a35c; --c-6:#5cc4c4; --c-7:#e08bbd; --c-8:#b3c46a; --c-google:#8ab4f8;
     }
   }
   :root[data-theme="dark"]{
     --bg:#151614; --card:#1f201d; --ink:#ecebe5; --sub:#a3a194; --line:#33342f;
     --accent:#6fae7c; --accent-ink:#10140f; --today:#2d2a1b; --sun:#ef7f73; --sat:#7fa8ec;
     --warn-bg:#3a2a12; --warn-ink:#f2c27d; --who-ink:#14150f;
-    --c-me:#9aa9b1; --c-1:#e07c78; --c-2:#7fa8ec; --c-3:#7cc489; --c-4:#b79ae0; --c-5:#e6a35c; --c-6:#5cc4c4; --c-7:#e08bbd; --c-8:#b3c46a;
+    --c-me:#9aa9b1; --c-1:#e07c78; --c-2:#7fa8ec; --c-3:#7cc489; --c-4:#b79ae0; --c-5:#e6a35c; --c-6:#5cc4c4; --c-7:#e08bbd; --c-8:#b3c46a; --c-google:#8ab4f8;
   }
   *{ box-sizing:border-box; }
   html,body{ margin:0; background:var(--bg); color:var(--ink);
@@ -46,6 +46,26 @@
   h1{ font-size:20px; margin:0; letter-spacing:.02em; }
   .updated{ font-size:12px; color:var(--sub); margin-top:2px; }
   .updated.stale{ color:var(--warn-ink); }
+  .top-r{ display:flex; gap:6px; align-items:center; flex:0 0 auto; }
+  .icon-btn{ border:1px solid var(--line); background:var(--card); border-radius:9px; min-width:38px; min-height:36px; font-size:17px; padding:0; }
+  .icon-btn{ position:relative; }
+  .icon-btn.spin span{ display:inline-block; animation:spin 1s linear infinite; }
+  .icon-btn.need::after{ content:''; position:absolute; top:4px; right:4px; width:8px; height:8px; border-radius:50%; background:var(--warn-ink); }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .sheet .field{ width:100%; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:8px; padding:8px; font-size:14px; }
+  .sheet label.ck{ display:flex; gap:8px; align-items:center; margin-top:6px; }
+  .sheet{ position:fixed; inset:0; z-index:25; background:rgba(0,0,0,.45); display:none; align-items:flex-end; justify-content:center; }
+  .sheet .box{ background:var(--card); color:var(--ink); width:100%; max-width:560px; border-radius:16px 16px 0 0;
+    padding:18px 16px calc(18px + env(safe-area-inset-bottom)); max-height:85vh; overflow-y:auto; line-height:1.7; font-size:14px; }
+  .sheet h2{ font-size:17px; margin:0 0 6px; }
+  .sheet h3{ font-size:14px; margin:12px 0 2px; }
+  .sheet ol{ margin:2px 0; padding-left:20px; }
+  .sheet .note{ font-size:12.5px; color:var(--sub); }
+  .sheet .btns{ display:flex; gap:8px; margin-top:14px; }
+  .sheet .btns button{ flex:1; min-height:44px; border-radius:10px; font-size:15px; border:1px solid var(--line); background:var(--card); }
+  .sheet .btns button:disabled{ opacity:.45; }
+  .sheet details{ margin-top:8px; }
+  .sheet .btns .primary{ background:var(--accent); color:var(--accent-ink); border:none; font-weight:700; }
   .seg{ display:flex; flex:0 0 auto; background:var(--line); border-radius:9px; padding:2px; }
   .seg button{ border:none; background:none; border-radius:7px; padding:6px 10px; white-space:nowrap; font-size:13px; min-height:32px; color:var(--sub); }
   .seg button[aria-pressed="true"]{ background:var(--card); color:var(--ink); font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,.12); }
@@ -136,9 +156,13 @@
       <h1>予定</h1>
       <div class="updated" id="updated">まだ取り込んでいません</div>
     </div>
+    <div class="top-r">
+    <button class="icon-btn" id="gSyncBtn" type="button" aria-label="Googleと同期" style="display:none;"><span>🔄</span></button>
+    <button class="icon-btn" id="icsBtn" type="button" aria-label="Googleカレンダーと連携" title="Googleカレンダーと連携">📅</button>
     <div class="seg" id="viewSeg" role="group" aria-label="表示の切り替え">
       <button type="button" data-view="list" aria-pressed="true">一覧</button>
       <button type="button" data-view="cal" aria-pressed="false">カレンダー</button>
+    </div>
     </div>
   </div>
   <div class="chips" id="chips"></div>
@@ -155,6 +179,46 @@
     <div class="msg" id="scanMsg">PCの画面のQRにかざしてください</div>
     <div class="grid" id="scanGrid"></div>
     <button class="cancel" id="scanCancel" type="button">やめる</button>
+  </div>
+</div>
+<div class="sheet" id="icsSheet" role="dialog" aria-label="Googleカレンダーと連携">
+  <div class="box">
+    <h2>🔄 Googleと自動連携</h2>
+    <div id="gApiStatus" class="note" style="white-space:pre-line;"></div>
+    <input class="field" id="gClientId" placeholder="クライアントID(….apps.googleusercontent.com)" autocomplete="off" autocapitalize="off" spellcheck="false" style="margin-top:6px;">
+    <label class="ck"><input type="checkbox" id="gPullOn"> Googleの予定をここに表示する</label>
+    <label class="ck"><input type="checkbox" id="gPushOn"> 役場の予定をGoogleの「役場の予定」カレンダーへ写す</label>
+    <div class="btns"><button type="button" id="gApiOff">連携をやめる</button><button type="button" class="primary" id="gApiSave">保存して同期</button></div>
+    <p class="note">右上の🔄で同期します。ログインは1時間有効で、その間はアプリを開いたときやQRで更新したときに自動で同期します。切れたら🔄を押すとGoogleのログイン画面に移ります。</p>
+    <hr style="border:none; border-top:1px solid var(--line); margin:16px 0 8px;">
+    <h2>📅 .icsファイルで読み込む</h2>
+    <div id="gStatus" class="note"></div>
+    <div class="btns" style="margin-top:8px;"><button type="button" class="primary" id="gPick">.icsファイルを読み込む</button><button type="button" id="gClear">Googleの予定を消す</button></div>
+    <input type="file" id="gFile" accept=".ics,text/calendar" hidden>
+    <details>
+      <summary class="note" style="cursor:pointer;">.icsファイルの取り出し方</summary>
+      <ol>
+        <li>ブラウザで calendar.google.com を開く(スマホはメニューの「PC版サイト」で)。</li>
+        <li>⚙設定 → 左の「マイカレンダーの設定」で自分のカレンダー → <b>「iCal形式の非公開URL」</b> をコピーして、ブラウザで開くと .ics が保存されます。<br><span class="note">このURLは他人に教えないでください(知っている人は予定を見られます)。</span></li>
+        <li>またはパソコンで ⚙設定 → <b>インポート/エクスポート</b> → エクスポート(zipを開いて中の .ics を使う)。</li>
+      </ol>
+      <p class="note">Googleの予定はこのスマホの中だけに保存されます。自動では更新されないので、ときどき読み込み直してください。</p>
+    </details>
+    <hr style="border:none; border-top:1px solid var(--line); margin:16px 0 8px;">
+    <h2>📤 役場の予定をGoogleカレンダーへ</h2>
+    <div id="icsSummary" class="note"></div>
+    <h3>iPhone</h3>
+    <ol>
+      <li>「書き出す」を押し、共有の画面で <b>「ファイルに保存」</b> を選ぶ(またはそのままカレンダーで開く)。</li>
+      <li>開くと「すべて追加」が出るので、追加先に <b>Googleのカレンダー</b> を選ぶ(設定 → カレンダー → アカウントでGoogleを追加しておく)。</li>
+    </ol>
+    <h3>Android・パソコン</h3>
+    <ol>
+      <li>「書き出す」で .ics ファイルを保存する。</li>
+      <li>ブラウザで calendar.google.com を開き、⚙設定 → <b>インポート/エクスポート</b> → ファイルを選んでインポート。</li>
+    </ol>
+    <p class="note">同じ予定はもう一度取り込んでも増えません(上書きされます)。GroupSessionで取り消された予定は、Googleカレンダーからは消えないので手で消してください。役場の予定用のカレンダーを1つ作って、そこへ取り込むのがおすすめです。予定を外部のサービスへ出すことになるので、職場のルールも確認してください。</p>
+    <div class="btns"><button type="button" id="icsClose">閉じる</button><button type="button" class="primary" id="icsGo">書き出す</button></div>
   </div>
 </div>
 <div class="toast" id="toast"></div>

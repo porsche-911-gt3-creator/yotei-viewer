@@ -75,16 +75,299 @@
     return p && p.v === 1 && Array.isArray(p.e) && typeof p.f === 'string' && typeof p.to === 'string';
   }
 
-  const core = { parseFrame, base45Decode, crc32, Collector, inflate, validPayload };
+  // ---------- カレンダー形式(.ics)への書き出し(Googleカレンダー・iPhoneのカレンダーに取り込める) ----------
+  // 同じ予定は毎回同じUIDになるので、もう一度取り込むと新しく増えずに上書きされる
+  function icsEscape(s){ return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n'); }
+  // 1行75バイトまで(UTF-8)。続きは先頭に空白を付けて折り返す
+  function icsFold(line){
+    const enc = new TextEncoder();
+    if(enc.encode(line).length <= 75) return line;
+    const out = []; let cur = '', bytes = 0;
+    for(const ch of line){
+      const b = enc.encode(ch).length;
+      if(bytes + b > (out.length ? 74 : 75)){ out.push(cur); cur = ''; bytes = 0; }
+      cur += ch; bytes += b;
+    }
+    out.push(cur);
+    return out.join('\r\n ');
+  }
+  const compactDate = ds => ds.replace(/-/g, '');
+  function nextDay(ds){ const d = new Date(ds + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); }
+  function hashStr(s){ let h = 0x811c9dc5; for(let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(36); }
+  // events: 予定ビューアの形式 [人, 開始日, 終了日, 開始時刻, 終了時刻, 件名, 場所, メモ, 印]
+  function buildIcs(events, opts){
+    opts = opts || {};
+    const label = opts.label || (src => src || '自分');
+    const stamp = (opts.now || new Date()).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+    const seen = new Map();
+    const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//yotei-viewer//JA', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+      'X-WR-CALNAME:' + icsEscape(opts.calName || '役場の予定'), 'X-WR-TIMEZONE:Asia/Tokyo',
+      'BEGIN:VTIMEZONE', 'TZID:Asia/Tokyo', 'BEGIN:STANDARD', 'DTSTART:19700101T000000', 'TZOFFSETFROM:+0900', 'TZOFFSETTO:+0900', 'TZNAME:JST', 'END:STANDARD', 'END:VTIMEZONE'];
+    events.forEach(e=>{
+      const [src, start, end, st, et, title, loc, note, flags] = e;
+      const last = end || start;
+      const timed = !!st && !flags.includes('l');
+      const base = [src, start, st || '', title].join('|');
+      const n = (seen.get(base) || 0) + 1; seen.set(base, n);
+      lines.push('BEGIN:VEVENT', 'UID:' + hashStr(base) + '-' + n + '@yotei-viewer', 'DTSTAMP:' + stamp);
+      if(timed){
+        const t = s => s.replace(':', '') + '00';
+        let endTime = et;
+        if(!endTime){ const [h, m] = st.split(':').map(Number); endTime = `${String(Math.min(23, h + 1)).padStart(2, '0')}:${String(h + 1 > 23 ? 59 : m).padStart(2, '0')}`; }
+        lines.push(`DTSTART;TZID=Asia/Tokyo:${compactDate(start)}T${t(st)}`, `DTEND;TZID=Asia/Tokyo:${compactDate(last)}T${t(endTime)}`);
+      } else {
+        lines.push(`DTSTART;VALUE=DATE:${compactDate(start)}`, `DTEND;VALUE=DATE:${compactDate(nextDay(last))}`, 'TRANSP:TRANSPARENT');
+      }
+      const prefix = flags.includes('t') ? '☐ ' : flags.includes('l') ? '(休暇)' : '';
+      lines.push('SUMMARY:' + icsEscape(`[${label(src)}] ${prefix}${title}`));
+      if(loc) lines.push('LOCATION:' + icsEscape(loc));
+      if(note) lines.push('DESCRIPTION:' + icsEscape(note));
+      lines.push('END:VEVENT');
+    });
+    lines.push('END:VCALENDAR');
+    return lines.map(icsFold).join('\r\n') + '\r\n';
+  }
+
+  // ---------- カレンダー形式(.ics)の読み込み(Googleカレンダーから書き出したもの) ----------
+  // 戻り値: 予定ビューアの形式の予定の配列。繰り返しの予定は from〜to の範囲で展開する
+  function icsUnescape(s){ return String(s).replace(/\\([\;,nN])/g, (m, c) => c === 'n' || c === 'N' ? '\n' : c); }
+  const pad2 = n => String(n).padStart(2, '0');
+  const dstr = d => `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+  const dparse = ds => new Date(ds + 'T00:00:00Z');
+  const daddDays = (ds, n) => { const d = dparse(ds); d.setUTCDate(d.getUTCDate() + n); return dstr(d); };
+  // その時刻帯での壁時計の時刻 → 日本時間
+  function tzOffsetMinutes(tz, utcMs){
+    try{
+      const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const p = {}; f.formatToParts(new Date(utcMs)).forEach(x => { p[x.type] = x.value; });
+      return (Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - utcMs) / 60000;
+    }catch(e){ return 540; }
+  }
+  function parseIcsTime(value, params){
+    const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?$/.exec(String(value).trim());
+    if(!m) return null;
+    const [, y, mo, d, h, mi, s, z] = m;
+    if(h === undefined || params.VALUE === 'DATE') return { date: `${y}-${mo}-${d}`, time: '' };
+    let ms = Date.UTC(+y, +mo - 1, +d, +h, +mi, +(s || 0));
+    const tz = params.TZID;
+    if(z) ms += 540 * 60000;                       // UTC → 日本時間
+    else if(tz && !/Tokyo|Japan|JST/i.test(tz)){    // ほかの時刻帯 → 日本時間
+      const off = tzOffsetMinutes(tz, ms - tzOffsetMinutes(tz, ms) * 60000);
+      ms = ms - off * 60000 + 540 * 60000;
+    }
+    const t = new Date(ms);
+    return { date: dstr(t), time: `${pad2(t.getUTCHours())}:${pad2(t.getUTCMinutes())}` };
+  }
+  function readIcsEvents(text){
+    const lines = String(text).replace(/\r\n|\r/g, '\n').replace(/\n[ \t]/g, '').split('\n');
+    const events = []; let cur = null, depth = 0;
+    for(const line of lines){
+      if(line === 'BEGIN:VEVENT'){ cur = { props: {}, multi: {} }; depth = 0; continue; }
+      if(!cur) continue;
+      if(/^BEGIN:/.test(line)){ depth++; continue; }      // VALARM などは読み飛ばす
+      if(/^END:/.test(line)){
+        if(depth > 0){ depth--; continue; }
+        if(line === 'END:VEVENT'){ events.push(cur); cur = null; }
+        continue;
+      }
+      if(depth > 0) continue;
+      const ci = line.search(/[:;]/);
+      if(ci < 0) continue;
+      const name = line.slice(0, ci).toUpperCase();
+      let rest = line.slice(ci), params = {};
+      while(rest[0] === ';'){
+        const mm = /^;([^=;:]+)=("[^"]*"|[^;:]*)/.exec(rest);
+        if(!mm) break;
+        params[mm[1].toUpperCase()] = mm[2].replace(/^"|"$/g, '');
+        rest = rest.slice(mm[0].length);
+      }
+      const value = rest.slice(1);
+      if(name === 'EXDATE'){ (cur.multi.EXDATE = cur.multi.EXDATE || []).push(...value.split(',').map(v => ({ value: v, params }))); continue; }
+      cur.props[name] = { value, params };
+    }
+    return events;
+  }
+  const WDS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+  // 繰り返しの開始日の一覧(from〜to の範囲だけ)
+  function expandRule(startDate, rule, from, to){
+    const r = {}; rule.split(';').forEach(kv => { const [k, v] = kv.split('='); if(k) r[k.toUpperCase()] = v || ''; });
+    const freq = r.FREQ, interval = Math.max(1, +r.INTERVAL || 1);
+    const count = r.COUNT ? +r.COUNT : Infinity;
+    const until = r.UNTIL ? (parseIcsTime(r.UNTIL, {}) || {}).date : null;
+    const byday = r.BYDAY ? r.BYDAY.split(',').map(x => { const m = /^([+-]?\d+)?([A-Z]{2})$/.exec(x); return m ? { n: m[1] ? +m[1] : 0, wd: WDS.indexOf(m[2]) } : null; }).filter(Boolean) : [];
+    const bymonthday = r.BYMONTHDAY ? r.BYMONTHDAY.split(',').map(Number) : [];
+    const out = []; let n = 0;
+    const s = dparse(startDate);
+    const take = ds => {
+      if(ds < startDate) return true;
+      if(until && ds > until) return false;
+      if(n >= count) return false;
+      n++;
+      if(ds >= from && ds <= to) out.push(ds);
+      return ds <= to;
+    };
+    const lastDay = (y, m) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    for(let i = 0; i < 3000; i++){
+      let cand = [];
+      if(freq === 'DAILY'){ cand = [daddDays(startDate, i * interval)]; }
+      else if(freq === 'WEEKLY'){
+        const days = byday.length ? byday.map(b => b.wd) : [s.getUTCDay()];
+        const monday = daddDays(startDate, -((s.getUTCDay() + 6) % 7) + i * 7 * interval);
+        cand = days.map(wd => daddDays(monday, (wd + 6) % 7)).sort();
+      } else if(freq === 'MONTHLY' || freq === 'YEARLY'){
+        const step = freq === 'MONTHLY' ? i * interval : i * interval * 12;
+        const y = s.getUTCFullYear() + Math.floor((s.getUTCMonth() + step) / 12), m = (s.getUTCMonth() + step) % 12;
+        const ld = lastDay(y, m);
+        if(byday.length){
+          byday.forEach(b => {
+            const all = []; for(let d = 1; d <= ld; d++) if(new Date(Date.UTC(y, m, d)).getUTCDay() === b.wd) all.push(d);
+            const pick = b.n > 0 ? [all[b.n - 1]] : b.n < 0 ? [all[all.length + b.n]] : all;
+            pick.forEach(d => { if(d) cand.push(`${y}-${pad2(m + 1)}-${pad2(d)}`); });
+          });
+        } else {
+          (bymonthday.length ? bymonthday : [s.getUTCDate()]).forEach(d => {
+            const dd = d < 0 ? ld + d + 1 : d;
+            if(dd >= 1 && dd <= ld) cand.push(`${y}-${pad2(m + 1)}-${pad2(dd)}`);
+          });
+        }
+        cand.sort();
+      } else { take(startDate); break; }
+      let more = true;
+      for(const ds of cand){ if(!take(ds)){ more = false; break; } }
+      if(!more) break;
+    }
+    return out;
+  }
+  function parseIcs(text, opts){
+    opts = opts || {};
+    const from = opts.from || '0000-01-01', to = opts.to || '9999-12-31', src = opts.src || 'Google';
+    const raw = readIcsEvents(text);
+    const overridden = new Set();
+    raw.forEach(ev => { const rid = ev.props['RECURRENCE-ID']; if(rid && ev.props.UID){ const t = parseIcsTime(rid.value, rid.params); if(t) overridden.add(ev.props.UID.value + '|' + t.date); } });
+    const out = [];
+    raw.forEach(ev => {
+      const P = ev.props;
+      if(!P.DTSTART || (P.STATUS && /CANCELLED/i.test(P.STATUS.value))) return;
+      const st = parseIcsTime(P.DTSTART.value, P.DTSTART.params);
+      if(!st) return;
+      let en = P.DTEND ? parseIcsTime(P.DTEND.value, P.DTEND.params) : null;
+      const allDay = !st.time;
+      // 長さ(日数)と終了時刻を決める
+      let spanDays = 0, endTime = '';
+      if(allDay){
+        if(en && en.date > st.date) spanDays = Math.round((dparse(en.date) - dparse(st.date)) / 864e5) - 1;
+      } else if(en){
+        spanDays = Math.max(0, Math.round((dparse(en.date) - dparse(st.date)) / 864e5));
+        endTime = en.time === '00:00' && spanDays > 0 ? (spanDays--, '23:59') : en.time;
+      }
+      const title = P.SUMMARY ? icsUnescape(P.SUMMARY.value) : '(件名なし)';
+      const loc = P.LOCATION ? icsUnescape(P.LOCATION.value) : '';
+      const note = P.DESCRIPTION ? icsUnescape(P.DESCRIPTION.value).replace(/<[^>]+>/g, '').slice(0, 300) : '';
+      const ex = new Set((ev.multi.EXDATE || []).map(x => (parseIcsTime(x.value, x.params) || {}).date));
+      const uid = P.UID ? P.UID.value : '';
+      if(/@yotei-viewer$/.test(uid)) return; // このアプリで書き出した役場の予定は、二重になるので読まない
+      let starts;
+      if(P.RRULE && !P['RECURRENCE-ID']){
+        starts = expandRule(st.date, P.RRULE.value, daddDays(from, -spanDays), to).filter(ds => !ex.has(ds) && !overridden.has(uid + '|' + ds));
+      } else {
+        starts = (daddDays(st.date, spanDays) >= from && st.date <= to) ? [st.date] : [];
+      }
+      starts.forEach(ds => {
+        const last = daddDays(ds, spanDays);
+        out.push([src, ds, last !== ds ? last : '', allDay ? '' : st.time, allDay ? '' : endTime, title, loc, note, '']);
+      });
+    });
+    return out.sort((a, b) => (a[1] + a[3]).localeCompare(b[1] + b[3]));
+  }
+
+  // ---------- Google Calendar API 用の変換(画面と分けてある) ----------
+  // 役場の予定 → Googleの予定(events.import 用)。UIDは .ics の書き出しと同じなので、どちらで入れても二重にならない
+  function officeToGoogle(events, opts){
+    opts = opts || {};
+    const label = opts.label || (src => src || '自分');
+    const seen = new Map();
+    return events.map(e=>{
+      const [src, start, end, st, et, title, loc, note, flags] = e;
+      const last = end || start;
+      const base = [src, start, st || '', title].join('|');
+      const n = (seen.get(base) || 0) + 1; seen.set(base, n);
+      const timed = !!st && !flags.includes('l');
+      const prefix = flags.includes('t') ? '☐ ' : flags.includes('l') ? '(休暇)' : '';
+      const ev = { iCalUID: hashStr(base) + '-' + n + '@yotei-viewer', summary: `[${label(src)}] ${prefix}${title}` };
+      if(timed){
+        let endTime = et;
+        if(!endTime){ const [h, m] = st.split(':').map(Number); endTime = h + 1 > 23 ? '23:59' : `${String(h + 1).padStart(2, '0')}:${String(m).padStart(2, '0')}`; }
+        ev.start = { dateTime: `${start}T${st}:00`, timeZone: 'Asia/Tokyo' };
+        ev.end = { dateTime: `${last}T${endTime}:00`, timeZone: 'Asia/Tokyo' };
+      } else {
+        ev.start = { date: start };
+        ev.end = { date: nextDay(last) };
+        ev.transparency = 'transparent';
+      }
+      if(loc) ev.location = loc;
+      if(note) ev.description = note;
+      // 中身の目印。変わっていなければ送り直さない
+      ev.extendedProperties = { private: { yv: '1', h: hashStr(JSON.stringify([ev.summary, ev.start, ev.end, loc || '', note || ''])) } };
+      return ev;
+    });
+  }
+  // Googleの予定(events.list の items) → 予定ビューアの形式
+  function googleToViewer(items, src){
+    const out = [];
+    (items || []).forEach(it=>{
+      if(!it || it.status === 'cancelled' || !it.start) return;
+      if(it.extendedProperties && it.extendedProperties.private && it.extendedProperties.private.yv) return; // このアプリが入れた役場の予定
+      if(/@yotei-viewer$/.test(it.iCalUID || '')) return;
+      const title = it.summary || '(件名なし)', loc = it.location || '', note = String(it.description || '').replace(/<[^>]+>/g, '').slice(0, 300);
+      if(it.start.date){
+        const s = it.start.date, endEx = (it.end && it.end.date) || nextDay(s);
+        const last = addUtcDays(endEx, -1);
+        out.push([src, s, last > s ? last : '', '', '', title, loc, note, '']);
+        return;
+      }
+      const toJst = iso => { const t = new Date(new Date(iso).getTime() + 9 * 3600e3); return { date: t.toISOString().slice(0, 10), time: t.toISOString().slice(11, 16) }; };
+      const s = toJst(it.start.dateTime), e = it.end && it.end.dateTime ? toJst(it.end.dateTime) : null;
+      let lastDate = e ? e.date : s.date, endTime = e ? e.time : '';
+      if(e && e.time === '00:00' && e.date > s.date){ lastDate = addUtcDays(e.date, -1); endTime = '23:59'; }
+      out.push([src, s.date, lastDate > s.date ? lastDate : '', s.time, endTime, title, loc, note, '']);
+    });
+    return out.sort((a, b) => (a[1] + a[3]).localeCompare(b[1] + b[3]));
+  }
+  function addUtcDays(ds, n){ const d = new Date(ds + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+  // 同期の計画: 送る(新規・変更) / 消す(Googleにあって役場の予定にないもの)
+  function planPush(desired, existing){
+    const have = new Map((existing || []).map(x => [x.iCalUID, x]));
+    const want = new Set(desired.map(d => d.iCalUID));
+    const put = desired.filter(d => { const x = have.get(d.iCalUID); return !x || !x.extendedProperties || !x.extendedProperties.private || x.extendedProperties.private.h !== d.extendedProperties.private.h; });
+    const del = (existing || []).filter(x => !want.has(x.iCalUID) && x.status !== 'cancelled');
+    return { put, del };
+  }
+
+  const core = { parseFrame, base45Decode, crc32, Collector, inflate, validPayload, buildIcs, parseIcs, officeToGoogle, googleToViewer, planPush };
   if(typeof window === 'undefined'){ if(typeof module !== 'undefined') module.exports = core; return; }
 
   // ---------- 保存 ----------
-  const DATA_KEY = 'yv.data', PREF_KEY = 'yv.prefs';
+  const DATA_KEY = 'yv.data', PREF_KEY = 'yv.prefs', GOOGLE_KEY = 'yv.google';
+  const GOOGLE = 'Google';
   function load(key){ try{ return JSON.parse(localStorage.getItem(key)); }catch(e){ return null; } }
   function save(key, v){ try{ localStorage.setItem(key, JSON.stringify(v)); return true; }catch(e){ return false; } }
 
-  let data = load(DATA_KEY);
-  if(!validPayload(data)) data = null;
+  // qrData: PCから取り込んだ予定 / gData: Googleカレンダーから読み込んだ予定 / data: 両方を合わせて表示に使うもの
+  let qrData = load(DATA_KEY);
+  if(!validPayload(qrData)) qrData = null;
+  let gData = load(GOOGLE_KEY);
+  if(!(gData && Array.isArray(gData.e))) gData = null;
+  let data = null;
+  function rebuild(){
+    if(!qrData && !gData){ data = null; return; }
+    const today = ymdLocal(new Date());
+    const base = qrData || { v: 1, t: null, f: addDaysLocal(today, -7), to: addDaysLocal(today, 365), e: [], r: [], x: [], h: {} };
+    const g = gData ? gData.e.filter(e => (e[2] || e[1]) >= base.f && e[1] <= base.to) : [];
+    data = Object.assign({}, base, { e: base.e.concat(g), r: gData ? (base.r || []).concat(GOOGLE) : base.r });
+  }
+  function ymdLocal(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+  function addDaysLocal(ds, n){ const d = new Date(ds + 'T00:00:00'); d.setDate(d.getDate() + n); return ymdLocal(d); }
+  rebuild();
   const prefs = Object.assign({ hidden: [], view: 'list' }, load(PREF_KEY) || {});
   let calMonth = null;   // カレンダーで表示中の月(YYYY-MM)
   let calSel = null;     // カレンダーで選んだ日(YYYY-MM-DD)
@@ -101,11 +384,12 @@
 
   function sourceColor(src){
     if(!src) return 'var(--c-me)';
+    if(src === GOOGLE) return 'var(--c-google)';
     // 役職(村長・副村長・教育長)は決まった色、課員は残りの色を順に使う
     const roles = (data && data.x) || [];
     const ri = roles.indexOf(src);
     if(ri >= 0) return `var(--c-${(ri % 3) + 1})`;
-    const people = ((data && data.r) || []).filter(x => x && !roles.includes(x));
+    const people = ((data && data.r) || []).filter(x => x && x !== GOOGLE && !roles.includes(x));
     return `var(--c-${(Math.max(0, people.indexOf(src)) % 5) + 4})`;
   }
   function sourceLabel(src){ return src || '自分'; }
@@ -113,6 +397,7 @@
   function renderUpdated(){
     const el = $('#updated');
     if(!data){ el.textContent = 'まだ取り込んでいません'; el.classList.remove('stale'); return; }
+    if(!data.t){ el.textContent = 'Googleの予定だけ表示中(PCの予定はまだ取り込んでいません)'; el.classList.remove('stale'); return; }
     const t = new Date(data.t);
     const hours = (Date.now() - t.getTime()) / 36e5;
     const when = `${t.getMonth()+1}/${t.getDate()}(${WD[t.getDay()]}) ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`;
@@ -174,6 +459,7 @@
         <p style="margin:8px 0 0; color:var(--sub); font-size:13px;">予定はこのスマホの中だけに保存され、どこにも送られません。</p></div>`;
   }
   function staleHtml(){
+    if(!data.t) return '';
     const hours = (Date.now() - new Date(data.t).getTime()) / 36e5;
     return hours >= 24 ? `<div class="notice">最後の更新から${Math.floor(hours / 24)}日たっています。予定が変わっているかもしれません。PCの画面から更新してください。</div>` : '';
   }
@@ -379,13 +665,15 @@
       return;
     }
     stopScan();
-    data = payload;
-    const ok = save(DATA_KEY, data);
+    qrData = payload;
+    const ok = save(DATA_KEY, qrData);
+    rebuild();
     showPast = false;
     calMonth = null; calSel = null;
     renderAll();
     scrollToToday();
-    toast(ok ? `${data.e.length}件の予定を取り込みました` : '取り込みましたが、保存できませんでした(次回起動時は消えます)', 3500);
+    if(gapiCfg.clientId && getToken()) setTimeout(() => googleSync({ quiet: false }), 3800);
+    toast(ok ? `${qrData.e.length}件の予定を取り込みました` : '取り込みましたが、保存できませんでした(次回起動時は消えます)', 3500);
   }
   function stopScan(){
     if(!scanning) return;
@@ -396,8 +684,240 @@
     scanning = null;
   }
 
+  // ---------- Googleカレンダー用の書き出し ----------
+  function icsTargets(){
+    if(!data) return [];
+    const today = ymd(new Date());
+    // 人の絞り込みはそのまま使う。今日より前に終わった予定は出さない
+    return data.e.filter(e => e[0] !== GOOGLE && !prefs.hidden.includes(e[0]) && (e[2] || e[1]) >= today);
+  }
+  function openIcsSheet(){
+    const evs = icsTargets();
+    const who = ((data && data.r) || []).filter(src => src !== GOOGLE && !prefs.hidden.includes(src)).map(sourceLabel).join('・');
+    $('#icsSummary').textContent = qrData ? `今日以降の役場の予定 ${evs.length}件(${who || 'なし'})を書き出します。上の人のボタンで絞り込めます。` : '先に「📷 更新」でPCの予定を取り込むと、書き出せます。';
+    $('#icsGo').disabled = !qrData;
+    renderGoogleStatus(); renderGapiSettings();
+    $('#icsSheet').style.display = 'flex';
+  }
+  async function exportIcs(){
+    const evs = icsTargets();
+    if(!evs.length){ toast('書き出す予定がありません。', 3000); return; }
+    const text = core.buildIcs(evs, { label: sourceLabel });
+    const name = `yotei-${ymd(new Date())}.ics`;
+    const file = new File([text], name, { type: 'text/calendar' });
+    try{
+      if(navigator.canShare && navigator.canShare({ files: [file] })){
+        await navigator.share({ files: [file], title: '役場の予定' });
+        $('#icsSheet').style.display = 'none';
+        return;
+      }
+    }catch(err){
+      if(err && err.name === 'AbortError') return; // 共有をやめた
+    }
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    toast(`${evs.length}件を ${name} に書き出しました`, 3500);
+  }
+
+  // ---------- Googleカレンダーとの自動連携(Google Calendar API) ----------
+  // サーバーは使わない。ブラウザでGoogleにログインして得た1時間有効の鍵(アクセストークン)で、スマホから直接Googleとやり取りする。
+  // ・Google → ビューア: 選んであるカレンダーの予定を読み込んで「Google」として表示
+  // ・役場 → Google: 「役場の予定」カレンダーを作り、PCから取り込んだ予定を写す(取り消されたものは消す)
+  const GAPI_KEY = 'yv.gapi', TOKEN_KEY = 'yv.gtoken';
+  const GAPI = 'https://www.googleapis.com/calendar/v3';
+  const OFFICE_CAL_NAME = '役場の予定';
+  const gapiCfg = Object.assign({ clientId: '', pull: true, push: true, calId: '', lastSync: 0, lastMsg: '' }, load(GAPI_KEY) || {});
+  const saveGapi = () => save(GAPI_KEY, gapiCfg);
+  let gSyncing = false;
+  function getToken(){
+    const t = load(TOKEN_KEY);
+    return t && t.token && t.exp > Date.now() + 60e3 ? t.token : null;
+  }
+  function appUrl(){ return location.origin + location.pathname; }
+  // Googleのログイン画面へ移り、戻ってきたら続きをする(ホーム画面のアプリでも動くよう、別窓ではなく画面ごと移る)
+  function googleSignIn(next){
+    if(!gapiCfg.clientId){ toast('先にクライアントIDを入れてください。', 4000); return; }
+    const state = Math.random().toString(36).slice(2);
+    try{ sessionStorage.setItem('yv.gstate', JSON.stringify({ state, next: next || 'sync' })); }catch(e){}
+    try{ localStorage.setItem('yv.gstate', JSON.stringify({ state, next: next || 'sync' })); }catch(e){}
+    const q = new URLSearchParams({ client_id: gapiCfg.clientId, redirect_uri: appUrl(), response_type: 'token',
+      scope: 'https://www.googleapis.com/auth/calendar', include_granted_scopes: 'true', state });
+    location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + q.toString();
+  }
+  // ログインから戻ってきたとき(URLの # に鍵が付いている)
+  function takeTokenFromUrl(){
+    if(!/access_token=|error=/.test(location.hash)) return null;
+    const h = new URLSearchParams(location.hash.slice(1));
+    history.replaceState(null, '', appUrl());
+    let saved = null;
+    try{ saved = JSON.parse(sessionStorage.getItem('yv.gstate') || localStorage.getItem('yv.gstate') || 'null'); }catch(e){}
+    try{ sessionStorage.removeItem('yv.gstate'); localStorage.removeItem('yv.gstate'); }catch(e){}
+    if(h.get('error')){ toast(`Googleにログインできませんでした(${h.get('error')})`, 5000); return null; }
+    if(!saved || saved.state !== h.get('state')){ toast('ログインの確認に失敗しました。もう一度お試しください。', 5000); return null; }
+    save(TOKEN_KEY, { token: h.get('access_token'), exp: Date.now() + (+h.get('expires_in') || 3600) * 1000 });
+    return saved.next || 'sync';
+  }
+  async function gfetch(path, opts){
+    const token = getToken();
+    if(!token) throw Object.assign(new Error('ログインが切れました'), { code: 'auth' });
+    const res = await fetch(path.startsWith('http') ? path : GAPI + path, Object.assign({}, opts, {
+      headers: Object.assign({ Authorization: 'Bearer ' + token }, opts && opts.body ? { 'Content-Type': 'application/json' } : {})
+    }));
+    if(res.status === 401){ try{ localStorage.removeItem(TOKEN_KEY); }catch(e){} throw Object.assign(new Error('ログインが切れました'), { code: 'auth' }); }
+    if(res.status === 204 || res.status === 410) return null;
+    const body = await res.json().catch(() => null);
+    if(!res.ok) throw new Error((body && body.error && body.error.message) || `Googleの応答 ${res.status}`);
+    return body;
+  }
+  async function listAll(path, params){
+    let items = [], pageToken = '';
+    for(let i = 0; i < 20; i++){
+      const q = new URLSearchParams(Object.assign({}, params, pageToken ? { pageToken } : {}));
+      const r = await gfetch(`${path}?${q}`);
+      items = items.concat((r && r.items) || []);
+      pageToken = r && r.nextPageToken;
+      if(!pageToken) break;
+    }
+    return items;
+  }
+  async function pool(list, n, fn){
+    let i = 0, fails = 0;
+    await Promise.all(Array.from({ length: Math.min(n, list.length) }, async () => {
+      while(i < list.length){ const x = list[i++]; try{ await fn(x); }catch(err){ if(err.code === 'auth') throw err; fails++; } }
+    }));
+    return fails;
+  }
+  const isoJst = ds => `${ds}T00:00:00+09:00`;
+  async function officeCalendarId(){
+    if(gapiCfg.calId){
+      try{ await gfetch(`/calendars/${encodeURIComponent(gapiCfg.calId)}`); return gapiCfg.calId; }catch(err){ if(err.code === 'auth') throw err; }
+    }
+    const list = await listAll('/users/me/calendarList', { minAccessRole: 'owner' });
+    const hit = list.find(c => c.summary === OFFICE_CAL_NAME);
+    const id = hit ? hit.id : (await gfetch('/calendars', { method: 'POST', body: JSON.stringify({ summary: OFFICE_CAL_NAME, timeZone: 'Asia/Tokyo', description: '予定ビューアが自動で書き込みます。ここで直しても次の同期で戻ります。' }) })).id;
+    gapiCfg.calId = id; saveGapi();
+    return id;
+  }
+  async function pullFromGoogle(){
+    const today = ymdLocal(new Date());
+    const cals = (await listAll('/users/me/calendarList', {})).filter(c =>
+      c.selected !== false && c.id !== gapiCfg.calId && c.summary !== OFFICE_CAL_NAME && !/#holiday@group\.v\.calendar\.google\.com$/.test(c.id));
+    let items = [];
+    for(const c of cals){
+      items = items.concat(await listAll(`/calendars/${encodeURIComponent(c.id)}/events`, {
+        singleEvents: 'true', orderBy: 'startTime', maxResults: '2500', timeMin: isoJst(addDaysLocal(today, -31)), timeMax: isoJst(addDaysLocal(today, 400)) }));
+    }
+    const evs = core.googleToViewer(items, GOOGLE);
+    gData = { t: new Date().toISOString(), n: `Google(${cals.length}個のカレンダー)`, e: evs, api: true };
+    save(GOOGLE_KEY, gData);
+    return evs.length;
+  }
+  async function pushToGoogle(){
+    if(!qrData) return null;
+    const today = ymdLocal(new Date());
+    const from = addDaysLocal(today, -7);
+    const desired = core.officeToGoogle(qrData.e.filter(e => (e[2] || e[1]) >= from), { label: sourceLabel });
+    const calId = await officeCalendarId();
+    const existing = await listAll(`/calendars/${encodeURIComponent(calId)}/events`, { maxResults: '2500', timeMin: isoJst(from), showDeleted: 'false' });
+    const plan = core.planPush(desired, existing);
+    const base = `/calendars/${encodeURIComponent(calId)}/events`;
+    const f1 = await pool(plan.put, 4, ev => gfetch(`${base}/import`, { method: 'POST', body: JSON.stringify(ev) }));
+    const f2 = await pool(plan.del, 4, ev => gfetch(`${base}/${encodeURIComponent(ev.id)}`, { method: 'DELETE' }));
+    return { put: plan.put.length - f1, del: plan.del.length - f2, fails: f1 + f2 };
+  }
+  async function googleSync(opts){
+    opts = opts || {};
+    if(gSyncing || !gapiCfg.clientId || (!gapiCfg.pull && !gapiCfg.push)) return;
+    if(!getToken()){ if(opts.interactive) googleSignIn('sync'); else renderGoogleBtn(); return; }
+    gSyncing = true; renderGoogleBtn();
+    const msgs = [];
+    try{
+      if(gapiCfg.pull) msgs.push(`Googleから${await pullFromGoogle()}件`);
+      if(gapiCfg.push && (opts.push !== false)){
+        const r = await pushToGoogle();
+        if(r) msgs.push(`役場の予定を送信 ${r.put}件・削除 ${r.del}件${r.fails ? `(失敗 ${r.fails}件)` : ''}`);
+      }
+      gapiCfg.lastSync = Date.now(); gapiCfg.lastMsg = msgs.join('・'); saveGapi();
+      rebuild(); renderAll();
+      if(!opts.quiet) toast(`Googleと同期しました:${gapiCfg.lastMsg}`, 4000);
+    }catch(err){
+      gapiCfg.lastMsg = `同期できませんでした:${err.message}`; saveGapi();
+      if(err.code === 'auth' && opts.interactive){ googleSignIn('sync'); return; }
+      if(!opts.quiet || err.code !== 'auth') toast(gapiCfg.lastMsg, 5000);
+    }finally{
+      gSyncing = false; renderGoogleBtn(); renderGapiSettings();
+    }
+  }
+  function renderGoogleBtn(){
+    const b = $('#gSyncBtn');
+    b.style.display = gapiCfg.clientId ? '' : 'none';
+    b.classList.toggle('spin', gSyncing);
+    b.classList.toggle('need', !!gapiCfg.clientId && !getToken());
+    b.title = gSyncing ? 'Googleと同期中…' : getToken() ? 'Googleと同期する' : 'Googleにログインして同期する';
+  }
+  function renderGapiSettings(){
+    $('#gClientId').value = gapiCfg.clientId;
+    $('#gPullOn').checked = !!gapiCfg.pull;
+    $('#gPushOn').checked = !!gapiCfg.push;
+    const when = gapiCfg.lastSync ? new Date(gapiCfg.lastSync) : null;
+    $('#gApiStatus').textContent = !gapiCfg.clientId ? 'クライアントIDを入れると使えます(作り方は手順書を見てください)。'
+      : `${getToken() ? 'ログイン中' : 'ログインしていません'}${when ? `・前回 ${when.getMonth()+1}/${when.getDate()} ${String(when.getHours()).padStart(2,'0')}:${String(when.getMinutes()).padStart(2,'0')}` : ''}${gapiCfg.lastMsg ? `\n${gapiCfg.lastMsg}` : ''}`;
+  }
+
+  // ---------- Googleカレンダーの予定の読み込み ----------
+  function renderGoogleStatus(){
+    const el = $('#gStatus');
+    if(!gData){ el.textContent = 'まだ読み込んでいません。'; $('#gClear').style.display = 'none'; return; }
+    const t = new Date(gData.t);
+    el.textContent = `${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')} に ${gData.e.length}件を読み込み済み(${gData.n || ''})。新しいファイルを読み込むと入れ替わります。`;
+    $('#gClear').style.display = '';
+  }
+  async function importGoogle(file){
+    if(!file) return;
+    let text = '';
+    try{ text = await file.text(); }catch(err){ toast('ファイルを読めませんでした。', 4000); return; }
+    if(!/BEGIN:VCALENDAR/.test(text)){ toast('カレンダーのファイル(.ics)ではないようです。zipのときは、開いて中の .ics を選んでください。', 6000); return; }
+    const today = ymdLocal(new Date());
+    const evs = core.parseIcs(text, { from: addDaysLocal(today, -31), to: addDaysLocal(today, 400), src: GOOGLE });
+    gData = { t: new Date().toISOString(), n: file.name, e: evs };
+    if(!save(GOOGLE_KEY, gData)) toast('保存できませんでした(次回起動時は消えます)', 4000);
+    rebuild(); renderAll(); renderGoogleStatus();
+    toast(`Googleの予定を${evs.length}件読み込みました`, 3500);
+    if(gapiCfg.pull && gapiCfg.clientId) toast('自動連携の読み込みがオンなので、次の同期でGoogleから読み直した内容に入れ替わります。', 5000);
+  }
+
   // ---------- 起動 ----------
   $('#scanBtn').addEventListener('click', startScan);
+  $('#icsBtn').addEventListener('click', openIcsSheet);
+  $('#icsClose').addEventListener('click', ()=>{ $('#icsSheet').style.display = 'none'; });
+  $('#icsSheet').addEventListener('click', e=>{ if(e.target.id === 'icsSheet') e.target.style.display = 'none'; });
+  $('#icsGo').addEventListener('click', exportIcs);
+  $('#gPick').addEventListener('click', ()=> $('#gFile').click());
+  $('#gSyncBtn').addEventListener('click', ()=> googleSync({ interactive: true }));
+  $('#gApiSave').addEventListener('click', ()=>{
+    const id = $('#gClientId').value.trim();
+    if(id && !/\.apps\.googleusercontent\.com$/.test(id)){ toast('クライアントIDは「….apps.googleusercontent.com」で終わる文字です。', 5000); return; }
+    if(id !== gapiCfg.clientId){ try{ localStorage.removeItem(TOKEN_KEY); }catch(e){} gapiCfg.calId = ''; }
+    gapiCfg.clientId = id; gapiCfg.pull = $('#gPullOn').checked; gapiCfg.push = $('#gPushOn').checked;
+    saveGapi(); renderGoogleBtn(); renderGapiSettings();
+    if(id) googleSync({ interactive: true });
+  });
+  $('#gApiOff').addEventListener('click', ()=>{
+    try{ localStorage.removeItem(TOKEN_KEY); }catch(e){}
+    gapiCfg.clientId = ''; gapiCfg.calId = ''; saveGapi();
+    renderGoogleBtn(); renderGapiSettings();
+    toast('自動連携をやめました(Googleにある「役場の予定」カレンダーは残ります)', 4000);
+  });
+  $('#gFile').addEventListener('change', e=>{ importGoogle(e.target.files[0]); e.target.value = ''; });
+  $('#gClear').addEventListener('click', ()=>{
+    gData = null;
+    try{ localStorage.removeItem(GOOGLE_KEY); }catch(e){}
+    rebuild(); renderAll(); renderGoogleStatus();
+    toast('Googleの予定を消しました', 2500);
+  });
   $('#scanCancel').addEventListener('click', stopScan);
   $('#todayBtn').addEventListener('click', scrollToToday);
   $('#search').addEventListener('input', e=>{ query = e.target.value; render(); });
@@ -417,7 +937,18 @@
   }, { passive: true });
   window.addEventListener('resize', updateHeadHeight);
   // 日付が変わったら(朝アプリを開いたときなど)表示を今日に合わせる
-  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ renderUpdated(); render(); } });
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.hidden) return;
+    renderUpdated(); render(); renderGoogleBtn();
+    // 開いたとき、ログインが生きていて前回から10分以上たっていれば、黙って同期する
+    if(gapiCfg.clientId && getToken() && Date.now() - gapiCfg.lastSync > 10 * 60e3) googleSync({ quiet: true });
+  });
   renderAll();
+  renderGoogleBtn();
+  {
+    const next = takeTokenFromUrl();
+    if(next) googleSync({ quiet: false });
+    else if(gapiCfg.clientId && getToken() && Date.now() - gapiCfg.lastSync > 10 * 60e3) googleSync({ quiet: true });
+  }
   if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 })();
