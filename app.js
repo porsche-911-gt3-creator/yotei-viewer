@@ -75,7 +75,60 @@
     return p && p.v === 1 && Array.isArray(p.e) && typeof p.f === 'string' && typeof p.to === 'string';
   }
 
-  const core = { parseFrame, base45Decode, crc32, Collector, inflate, validPayload };
+  // ---------- カレンダー形式(.ics)への書き出し(Googleカレンダー・iPhoneのカレンダーに取り込める) ----------
+  // 同じ予定は毎回同じUIDになるので、もう一度取り込むと新しく増えずに上書きされる
+  function icsEscape(s){ return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n'); }
+  // 1行75バイトまで(UTF-8)。続きは先頭に空白を付けて折り返す
+  function icsFold(line){
+    const enc = new TextEncoder();
+    if(enc.encode(line).length <= 75) return line;
+    const out = []; let cur = '', bytes = 0;
+    for(const ch of line){
+      const b = enc.encode(ch).length;
+      if(bytes + b > (out.length ? 74 : 75)){ out.push(cur); cur = ''; bytes = 0; }
+      cur += ch; bytes += b;
+    }
+    out.push(cur);
+    return out.join('\r\n ');
+  }
+  const compactDate = ds => ds.replace(/-/g, '');
+  function nextDay(ds){ const d = new Date(ds + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); }
+  function hashStr(s){ let h = 0x811c9dc5; for(let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(36); }
+  // events: 予定ビューアの形式 [人, 開始日, 終了日, 開始時刻, 終了時刻, 件名, 場所, メモ, 印]
+  function buildIcs(events, opts){
+    opts = opts || {};
+    const label = opts.label || (src => src || '自分');
+    const stamp = (opts.now || new Date()).toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+    const seen = new Map();
+    const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//yotei-viewer//JA', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+      'X-WR-CALNAME:' + icsEscape(opts.calName || '役場の予定'), 'X-WR-TIMEZONE:Asia/Tokyo',
+      'BEGIN:VTIMEZONE', 'TZID:Asia/Tokyo', 'BEGIN:STANDARD', 'DTSTART:19700101T000000', 'TZOFFSETFROM:+0900', 'TZOFFSETTO:+0900', 'TZNAME:JST', 'END:STANDARD', 'END:VTIMEZONE'];
+    events.forEach(e=>{
+      const [src, start, end, st, et, title, loc, note, flags] = e;
+      const last = end || start;
+      const timed = !!st && !flags.includes('l');
+      const base = [src, start, st || '', title].join('|');
+      const n = (seen.get(base) || 0) + 1; seen.set(base, n);
+      lines.push('BEGIN:VEVENT', 'UID:' + hashStr(base) + '-' + n + '@yotei-viewer', 'DTSTAMP:' + stamp);
+      if(timed){
+        const t = s => s.replace(':', '') + '00';
+        let endTime = et;
+        if(!endTime){ const [h, m] = st.split(':').map(Number); endTime = `${String(Math.min(23, h + 1)).padStart(2, '0')}:${String(h + 1 > 23 ? 59 : m).padStart(2, '0')}`; }
+        lines.push(`DTSTART;TZID=Asia/Tokyo:${compactDate(start)}T${t(st)}`, `DTEND;TZID=Asia/Tokyo:${compactDate(last)}T${t(endTime)}`);
+      } else {
+        lines.push(`DTSTART;VALUE=DATE:${compactDate(start)}`, `DTEND;VALUE=DATE:${compactDate(nextDay(last))}`, 'TRANSP:TRANSPARENT');
+      }
+      const prefix = flags.includes('t') ? '☐ ' : flags.includes('l') ? '(休暇)' : '';
+      lines.push('SUMMARY:' + icsEscape(`[${label(src)}] ${prefix}${title}`));
+      if(loc) lines.push('LOCATION:' + icsEscape(loc));
+      if(note) lines.push('DESCRIPTION:' + icsEscape(note));
+      lines.push('END:VEVENT');
+    });
+    lines.push('END:VCALENDAR');
+    return lines.map(icsFold).join('\r\n') + '\r\n';
+  }
+
+  const core = { parseFrame, base45Decode, crc32, Collector, inflate, validPayload, buildIcs };
   if(typeof window === 'undefined'){ if(typeof module !== 'undefined') module.exports = core; return; }
 
   // ---------- 保存 ----------
@@ -396,8 +449,49 @@
     scanning = null;
   }
 
+  // ---------- Googleカレンダー用の書き出し ----------
+  function icsTargets(){
+    if(!data) return [];
+    const today = ymd(new Date());
+    // 人の絞り込みはそのまま使う。今日より前に終わった予定は出さない
+    return data.e.filter(e => !prefs.hidden.includes(e[0]) && (e[2] || e[1]) >= today);
+  }
+  function openIcsSheet(){
+    if(!data){ toast('先に「📷 更新」で予定を取り込んでください。', 4000); return; }
+    const evs = icsTargets();
+    const who = (data.r || []).filter(src => !prefs.hidden.includes(src)).map(sourceLabel).join('・');
+    $('#icsSummary').textContent = `今日以降の予定 ${evs.length}件(${who || 'なし'})を書き出します。上の人のボタンで絞り込めます。`;
+    $('#icsSheet').style.display = 'flex';
+  }
+  async function exportIcs(){
+    const evs = icsTargets();
+    if(!evs.length){ toast('書き出す予定がありません。', 3000); return; }
+    const text = core.buildIcs(evs, { label: sourceLabel });
+    const name = `yotei-${ymd(new Date())}.ics`;
+    const file = new File([text], name, { type: 'text/calendar' });
+    try{
+      if(navigator.canShare && navigator.canShare({ files: [file] })){
+        await navigator.share({ files: [file], title: '役場の予定' });
+        $('#icsSheet').style.display = 'none';
+        return;
+      }
+    }catch(err){
+      if(err && err.name === 'AbortError') return; // 共有をやめた
+    }
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    toast(`${evs.length}件を ${name} に書き出しました`, 3500);
+  }
+
   // ---------- 起動 ----------
   $('#scanBtn').addEventListener('click', startScan);
+  $('#icsBtn').addEventListener('click', openIcsSheet);
+  $('#icsClose').addEventListener('click', ()=>{ $('#icsSheet').style.display = 'none'; });
+  $('#icsSheet').addEventListener('click', e=>{ if(e.target.id === 'icsSheet') e.target.style.display = 'none'; });
+  $('#icsGo').addEventListener('click', exportIcs);
   $('#scanCancel').addEventListener('click', stopScan);
   $('#todayBtn').addEventListener('click', scrollToToday);
   $('#search').addEventListener('input', e=>{ query = e.target.value; render(); });
