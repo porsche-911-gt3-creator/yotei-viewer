@@ -144,8 +144,9 @@
     if(!ok) toast('表示設定を保存できませんでした。次回起動時には元に戻ります。', 5000);
     return ok;
   }
-  function renderGroups(){
+  function renderGroups(resetName = false){
     $('#displayTools').hidden = !data;
+    $('#groupShortcuts').hidden = !data;
     if(!data) return;
     const sources = data.r || [];
     const count = sources.filter(src => !prefs.hidden.includes(src)).length;
@@ -153,9 +154,21 @@
     const active = prefs.groups.find(g => g.id === (prefs.activeGroup || editingGroup));
     $('#displayGroup').innerHTML = '<option value="">個別に選択・新しいセット</option>' + prefs.groups.map(g =>
       `<option value="${esc(g.id)}"${active && g.id === active.id ? ' selected' : ''}>${esc(g.name)}</option>`).join('');
-    $('#groupName').value = active ? active.name : '';
+    if(resetName) $('#groupName').value = active ? active.name : '';
     $('#saveGroup').textContent = active ? '上書き保存' : '保存';
     $('#deleteGroup').disabled = !active;
+    $('#groupShortcuts').innerHTML = prefs.groups.length ? prefs.groups.map(g =>
+      `<button class="chip" type="button" data-group="${esc(g.id)}" aria-pressed="${g.id === prefs.activeGroup}">${esc(g.name)}</button>`).join('') : '<span class="display-help">表示セットはまだ保存されていません</span>';
+    $('#groupShortcuts').querySelectorAll('[data-group]').forEach(b => b.addEventListener('click', ()=> chooseGroup(b.dataset.group)));
+    $('#groupOrder').innerHTML = prefs.groups.length ? '<p class="display-help">セットの並び順（↑↓で変更・自動保存）</p>' + prefs.groups.map((g, i) =>
+      `<div class="display-row group-order-row"><button class="group-pick" type="button" data-group="${esc(g.id)}">${esc(g.name)}</button><button type="button" data-move="-1" data-id="${esc(g.id)}" aria-label="${esc(g.name)}を上へ"${i === 0 ? ' disabled' : ''}>↑</button><button type="button" data-move="1" data-id="${esc(g.id)}" aria-label="${esc(g.name)}を下へ"${i === prefs.groups.length - 1 ? ' disabled' : ''}>↓</button></div>`).join('') : '';
+    $('#groupOrder').querySelectorAll('[data-group]').forEach(b => b.addEventListener('click', ()=> chooseGroup(b.dataset.group)));
+    $('#groupOrder').querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', ()=>{
+      const i = prefs.groups.findIndex(g => g.id === b.dataset.id), next = i + Number(b.dataset.move);
+      if(i < 0 || next < 0 || next >= prefs.groups.length) return;
+      [prefs.groups[i], prefs.groups[next]] = [prefs.groups[next], prefs.groups[i]];
+      saveDisplayPrefs();
+    }));
   }
   function selectAllSources(on){
     if(!data) return;
@@ -165,9 +178,13 @@
     saveDisplayPrefs();
   }
   function selectGroup(){
+    chooseGroup($('#displayGroup').value);
+  }
+  function chooseGroup(id){
     editingGroup = '';
-    prefs.activeGroup = $('#displayGroup').value;
+    prefs.activeGroup = id;
     const group = prefs.groups.find(g => g.id === prefs.activeGroup);
+    $('#groupName').value = group ? group.name : '';
     if(group && data) prefs.hidden = (data.r || []).filter(src => !group.sources.includes(src));
     saveDisplayPrefs();
   }
@@ -191,6 +208,7 @@
     const group = prefs.groups.find(g => g.id === (prefs.activeGroup || editingGroup));
     if(!group || !window.confirm(`表示セット「${group.name}」を削除しますか？`)) return;
     prefs.groups = prefs.groups.filter(g => g.id !== group.id);
+    $('#groupName').value = '';
     prefs.activeGroup = '';
     editingGroup = '';
     saveDisplayPrefs();
@@ -351,7 +369,7 @@
     const el = document.querySelector('.day.is-today') || document.querySelector('.day');
     if(el) window.scrollTo({ top: el.offsetTop - $('#head').offsetHeight - 4, behavior: 'smooth' });
   }
-  function renderAll(){ renderUpdated(); renderViewSeg(); renderChips(); renderGroups(); render(); }
+  function renderAll(){ renderUpdated(); renderViewSeg(); renderChips(); renderGroups(true); render(); }
 
   let toastTimer = null;
   function toast(msg, ms){
@@ -465,6 +483,7 @@
   $('#selectAll').addEventListener('click', ()=> selectAllSources(true));
   $('#deselectAll').addEventListener('click', ()=> selectAllSources(false));
   $('#displayGroup').addEventListener('change', selectGroup);
+  $('#newGroup').addEventListener('click', ()=>{ chooseGroup(''); $('#groupName').focus(); });
   $('#saveGroup').addEventListener('click', saveGroup);
   $('#deleteGroup').addEventListener('click', deleteGroup);
   $('#displayTools').addEventListener('toggle', updateHeadHeight);
