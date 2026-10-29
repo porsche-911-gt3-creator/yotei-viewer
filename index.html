@@ -58,6 +58,9 @@
     padding:6px 12px; font-size:13px; display:flex; align-items:center; gap:6px; min-height:34px; }
   .chip .dot{ width:8px; height:8px; border-radius:50%; }
   .chip[aria-pressed="false"]{ opacity:.45; }
+  #chips .chip{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  #chips .chip.is-dragging{ opacity:.25; outline:2px dashed var(--accent); }
+  .chip-drag-ghost{ position:fixed; z-index:40; pointer-events:none; opacity:.95; box-shadow:0 4px 16px rgba(0,0,0,.25); transform:translate(-50%,-50%); }
   .display-tools{ margin-top:8px; }
   .display-tools[open]{ max-height:50vh; overflow-y:auto; }
   .display-tools summary{ cursor:pointer; font-size:13px; padding:6px 0; }
@@ -157,7 +160,7 @@
     </div>
   </div>
   <div class="source-bar">
-    <div class="chips" id="chips" role="group" aria-label="表示する人とグループ"></div>
+    <div class="chips" id="chips" role="group" aria-label="表示する人とグループ" title="長押ししてドラッグで並べ替え"></div>
     <button class="chip" id="openChipOrder" type="button" hidden>並べ替え</button>
   </div>
   <div id="selectionTools" hidden>

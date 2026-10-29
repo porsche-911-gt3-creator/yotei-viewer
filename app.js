@@ -144,11 +144,94 @@
     const wrap = $('#chips');
     if(!data){ wrap.innerHTML = ''; return; }
     wrap.innerHTML = displayEntries().map(entry=>{
-      if(entry.group) return `<button class="chip group-chip" type="button" data-group="${esc(entry.group.id)}" aria-pressed="${entry.group.id === prefs.activeGroup}">👥 ${esc(entry.name)}</button>`;
+      if(entry.group) return `<button class="chip group-chip" type="button" data-sort-key="${esc(entry.key)}" data-group="${esc(entry.group.id)}" aria-pressed="${entry.group.id === prefs.activeGroup}">👥 ${esc(entry.name)}</button>`;
       const on = !prefs.hidden.includes(entry.src);
-      return `<button class="chip" type="button" data-src="${esc(entry.src)}" aria-pressed="${on}"><span class="dot" style="background:${sourceColor(entry.src)}"></span>${esc(entry.name)}</button>`;
+      return `<button class="chip" type="button" data-sort-key="${esc(entry.key)}" data-src="${esc(entry.src)}" aria-pressed="${on}"><span class="dot" style="background:${sourceColor(entry.src)}"></span>${esc(entry.name)}</button>`;
     }).join('');
     bindDisplayEntries(wrap);
+  }
+  function saveChipOrder(order){
+    prefs.chipOrder = order.concat(prefs.chipOrder.filter(key => !order.includes(key)));
+    return saveDisplayPrefs();
+  }
+  function bindChipDrag(){
+    const wrap = $('#chips');
+    let drag = null, suppressClickUntil = 0;
+    function move(x, y){
+      if(!drag) return;
+      drag.x = x; drag.y = y;
+      if(!drag.active){
+        if(Math.hypot(x - drag.startX, y - drag.startY) > 10) finish(false);
+        return;
+      }
+      drag.ghost.style.left = x + 'px'; drag.ghost.style.top = y + 'px';
+      const bounds = wrap.getBoundingClientRect();
+      if(y < bounds.top - 35 || y > bounds.bottom + 35) return;
+      const others = Array.from(wrap.querySelectorAll('[data-sort-key]')).filter(b => b !== drag.button);
+      const before = others.find(b => { const r = b.getBoundingClientRect(); return x < r.left + r.width / 2; });
+      wrap.insertBefore(drag.button, before || null);
+    }
+    function tick(){
+      if(!drag || !drag.active) return;
+      const r = wrap.getBoundingClientRect();
+      if(drag.y >= r.top - 35 && drag.y <= r.bottom + 35){
+        const dx = drag.x < r.left + 28 ? -6 : drag.x > r.right - 28 ? 6 : 0;
+        if(dx){ wrap.scrollLeft += dx; move(drag.x, drag.y); }
+      }
+      drag.frame = requestAnimationFrame(tick);
+    }
+    function start(target, x, y, touch){
+      if(drag) return;
+      const button = target.closest('[data-sort-key]');
+      if(!button || !wrap.contains(button)) return;
+      drag = { button, startX:x, startY:y, x, y, touch, active:false };
+      drag.timer = setTimeout(()=>{
+        if(!drag) return;
+        const r = button.getBoundingClientRect();
+        drag.active = true;
+        drag.ghost = button.cloneNode(true);
+        drag.ghost.classList.add('chip-drag-ghost');
+        drag.ghost.style.width = r.width + 'px';
+        drag.ghost.setAttribute('aria-hidden', 'true'); drag.ghost.tabIndex = -1;
+        document.body.appendChild(drag.ghost);
+        button.classList.add('is-dragging');
+        move(drag.x, drag.y); tick();
+        if(navigator.vibrate) try{ navigator.vibrate(20); }catch(e){}
+      }, 450);
+    }
+    function finish(commit){
+      if(!drag) return;
+      const last = drag; drag = null;
+      clearTimeout(last.timer); cancelAnimationFrame(last.frame);
+      if(!last.active) return;
+      suppressClickUntil = Date.now() + 800;
+      last.ghost.remove(); last.button.classList.remove('is-dragging');
+      if(commit){
+        const order = Array.from(wrap.querySelectorAll('[data-sort-key]')).map(b => b.dataset.sortKey);
+        if(saveChipOrder(order)) toast('並び順を保存しました');
+      } else renderChips();
+    }
+    wrap.addEventListener('click', e=>{ if(Date.now() < suppressClickUntil){ e.preventDefault(); e.stopImmediatePropagation(); } }, true);
+    wrap.addEventListener('contextmenu', e=>{ if(e.target.closest('[data-sort-key]')) e.preventDefault(); });
+    wrap.addEventListener('touchstart', e=>{
+      if(e.touches.length !== 1){ finish(false); return; }
+      const t = e.touches[0]; start(e.target, t.clientX, t.clientY, true);
+    }, { passive:true });
+    wrap.addEventListener('touchmove', e=>{
+      if(!drag || !drag.touch) return;
+      if(e.touches.length !== 1){ finish(false); return; }
+      if(drag.active) e.preventDefault();
+      const t = e.touches[0]; move(t.clientX, t.clientY);
+    }, { passive:false });
+    wrap.addEventListener('touchend', e=>{ if(drag && drag.touch){ if(drag.active) e.preventDefault(); finish(true); } }, { passive:false });
+    wrap.addEventListener('touchcancel', ()=> finish(false));
+    wrap.addEventListener('pointerdown', e=>{ if(e.pointerType === 'mouse' && e.button === 0) start(e.target, e.clientX, e.clientY, false); });
+    window.addEventListener('pointermove', e=>{ if(drag && !drag.touch) move(e.clientX, e.clientY); });
+    window.addEventListener('pointerup', ()=>{ if(drag && !drag.touch) finish(true); });
+    window.addEventListener('pointercancel', ()=>{ if(drag && !drag.touch) finish(false); });
+    window.addEventListener('blur', ()=> finish(false));
+    document.addEventListener('visibilitychange', ()=>{ if(document.hidden) finish(false); });
+    document.addEventListener('keydown', e=>{ if(e.key === 'Escape') finish(false); });
   }
   function saveDisplayPrefs(){
     const ok = save(PREF_KEY, prefs);
@@ -171,7 +254,7 @@
     $('#saveGroup').textContent = active ? '上書き保存' : '保存';
     $('#deleteGroup').disabled = !active;
     const entries = displayEntries();
-    $('#groupOrder').innerHTML = '<p class="display-help">人・グループの並び順（↑↓で変更・自動保存）</p>' + entries.map((entry, i) => {
+    $('#groupOrder').innerHTML = '<p class="display-help">人・グループの並び順（↑↓で変更・自動保存）。上の列では長押ししてドラッグでも移動できます。</p>' + entries.map((entry, i) => {
       const target = entry.group ? `data-group="${esc(entry.group.id)}"` : `data-src="${esc(entry.src)}"`;
       const label = (entry.group ? '👥 ' : '') + entry.name;
       return `<div class="display-row group-order-row"><button class="group-pick" type="button" ${target}>${esc(label)}</button><button type="button" data-move="-1" data-key="${esc(entry.key)}" aria-label="${esc(entry.name)}を上へ"${i === 0 ? ' disabled' : ''}>↑</button><button type="button" data-move="1" data-key="${esc(entry.key)}" aria-label="${esc(entry.name)}を下へ"${i === entries.length - 1 ? ' disabled' : ''}>↓</button></div>`;
@@ -183,8 +266,7 @@
       if(i < 0 || next < 0 || next >= order.length) return;
       [order[i], order[next]] = [order[next], order[i]];
       // 今回のQRに含まれない人のキーも保持する。
-      prefs.chipOrder = order.concat(prefs.chipOrder.filter(key => !order.includes(key)));
-      saveDisplayPrefs();
+      saveChipOrder(order);
     }));
   }
 
@@ -497,6 +579,7 @@
   }
 
   // ---------- 起動 ----------
+  bindChipDrag();
   $('#scanBtn').addEventListener('click', startScan);
   $('#selectAll').addEventListener('click', ()=> selectAllSources(true));
   $('#deselectAll').addEventListener('click', ()=> selectAllSources(false));
