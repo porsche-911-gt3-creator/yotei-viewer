@@ -55,6 +55,14 @@
     padding:6px 12px; font-size:13px; display:flex; align-items:center; gap:6px; min-height:34px; }
   .chip .dot{ width:8px; height:8px; border-radius:50%; }
   .chip[aria-pressed="false"]{ opacity:.45; }
+  .display-tools{ margin-top:8px; }
+  .display-tools summary{ cursor:pointer; font-size:13px; padding:6px 0; }
+  .display-row{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:6px 0; }
+  .display-row button, .display-row select, .display-row input{ font:inherit; font-size:14px; min-height:40px;
+    border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); padding:7px 10px; max-width:100%; }
+  .display-row select, .display-row input{ flex:1; min-width:140px; font-size:16px; }
+  .display-row button:disabled{ opacity:.45; }
+  .display-help{ font-size:12px; color:var(--sub); margin:4px 0; line-height:1.5; }
   .search{ margin-top:8px; width:100%; border:1px solid var(--line); background:var(--card); color:var(--ink);
     border-radius:10px; padding:8px 10px; font-size:16px; }
   main{ padding:0 16px; }
@@ -142,6 +150,23 @@
     </div>
   </div>
   <div class="chips" id="chips"></div>
+  <details class="display-tools" id="displayTools" hidden>
+    <summary>表示する人・表示セット</summary>
+    <div class="display-row">
+      <button id="selectAll" type="button">全選択</button>
+      <button id="deselectAll" type="button">全選択解除</button>
+      <span id="selectionCount" class="display-help" aria-live="polite"></span>
+    </div>
+    <div class="display-row">
+      <select id="displayGroup" aria-label="表示セット"><option value="">セットを選ぶ</option></select>
+      <button id="deleteGroup" type="button" disabled>削除</button>
+    </div>
+    <div class="display-row">
+      <input id="groupName" type="text" maxlength="40" placeholder="セット名（例：自分と三役）" aria-label="表示セット名" autocomplete="off">
+      <button id="saveGroup" type="button">保存</button>
+    </div>
+    <p class="display-help">表示したい人を選び、名前を付けて保存できます。保存済みセットを選ぶと、表示する人が切り替わります。</p>
+  </details>
   <input class="search" id="search" type="search" placeholder="件名・場所で探す" enterkeyhint="search" autocomplete="off">
 </header>
 <main id="list"></main>
@@ -164,3 +189,4 @@
 <script src="app.js"></script>
 </body>
 </html>
+

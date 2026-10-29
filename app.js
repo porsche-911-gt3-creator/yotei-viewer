@@ -85,11 +85,14 @@
 
   let data = load(DATA_KEY);
   if(!validPayload(data)) data = null;
-  const prefs = Object.assign({ hidden: [], view: 'list' }, load(PREF_KEY) || {});
-  let calMonth = null;   // カレンダーで表示中の月(YYYY-MM)
-  let calSel = null;     // カレンダーで選んだ日(YYYY-MM-DD)
+  const prefs = Object.assign({ hidden: [], view: 'list', groups: [], activeGroup: '' }, load(PREF_KEY) || {});
+  if(!Array.isArray(prefs.hidden)) prefs.hidden = [];
+  prefs.groups = Array.isArray(prefs.groups) ? prefs.groups.filter(g => g && typeof g.id === 'string' && typeof g.name === 'string' && Array.isArray(g.sources)) : [];
+  let calMonth = null;
+  let calSel = null;
   let showPast = false;
   let query = '';
+  let editingGroup = '';
 
   // ---------- 表示 ----------
   const $ = s => document.querySelector(s);
@@ -130,9 +133,67 @@
     wrap.querySelectorAll('.chip').forEach(b => b.addEventListener('click', ()=>{
       const src = b.dataset.src;
       prefs.hidden = prefs.hidden.includes(src) ? prefs.hidden.filter(x => x !== src) : prefs.hidden.concat(src);
-      save(PREF_KEY, prefs);
-      renderChips(); render();
+      editingGroup = prefs.activeGroup || editingGroup;
+      prefs.activeGroup = '';
+      saveDisplayPrefs();
     }));
+  }
+  function saveDisplayPrefs(){
+    const ok = save(PREF_KEY, prefs);
+    renderChips(); renderGroups(); render();
+    if(!ok) toast('表示設定を保存できませんでした。次回起動時には元に戻ります。', 5000);
+    return ok;
+  }
+  function renderGroups(){
+    $('#displayTools').hidden = !data;
+    if(!data) return;
+    const sources = data.r || [];
+    const count = sources.filter(src => !prefs.hidden.includes(src)).length;
+    $('#selectionCount').textContent = `${count} / ${sources.length}人を表示${editingGroup ? '・セットの変更は未保存' : ''}`;
+    const active = prefs.groups.find(g => g.id === (prefs.activeGroup || editingGroup));
+    $('#displayGroup').innerHTML = '<option value="">個別に選択・新しいセット</option>' + prefs.groups.map(g =>
+      `<option value="${esc(g.id)}"${active && g.id === active.id ? ' selected' : ''}>${esc(g.name)}</option>`).join('');
+    $('#groupName').value = active ? active.name : '';
+    $('#saveGroup').textContent = active ? '上書き保存' : '保存';
+    $('#deleteGroup').disabled = !active;
+  }
+  function selectAllSources(on){
+    if(!data) return;
+    prefs.hidden = on ? [] : (data.r || []).slice();
+    editingGroup = prefs.activeGroup || editingGroup;
+    prefs.activeGroup = '';
+    saveDisplayPrefs();
+  }
+  function selectGroup(){
+    editingGroup = '';
+    prefs.activeGroup = $('#displayGroup').value;
+    const group = prefs.groups.find(g => g.id === prefs.activeGroup);
+    if(group && data) prefs.hidden = (data.r || []).filter(src => !group.sources.includes(src));
+    saveDisplayPrefs();
+  }
+  function saveGroup(){
+    if(!data) return;
+    const name = $('#groupName').value.trim();
+    if(!name){ toast('セット名を入力してください'); $('#groupName').focus(); return; }
+    const active = prefs.groups.find(g => g.id === (prefs.activeGroup || editingGroup));
+    if(prefs.groups.some(g => g.name === name && g !== active)){
+      toast('同じ名前のセットがあります。別の名前にしてください。'); return;
+    }
+    const group = { id: active ? active.id : crypto.randomUUID(), name,
+      sources: (data.r || []).filter(src => !prefs.hidden.includes(src)) };
+    if(active) prefs.groups = prefs.groups.map(g => g.id === active.id ? group : g);
+    else prefs.groups.push(group);
+    prefs.activeGroup = group.id;
+    editingGroup = '';
+    if(saveDisplayPrefs()) toast('表示セットを保存しました');
+  }
+  function deleteGroup(){
+    const group = prefs.groups.find(g => g.id === (prefs.activeGroup || editingGroup));
+    if(!group || !window.confirm(`表示セット「${group.name}」を削除しますか？`)) return;
+    prefs.groups = prefs.groups.filter(g => g.id !== group.id);
+    prefs.activeGroup = '';
+    editingGroup = '';
+    saveDisplayPrefs();
   }
   function evHtml(e){
     const [src, , , start, end, title, loc, note, flags] = e;
@@ -290,7 +351,7 @@
     const el = document.querySelector('.day.is-today') || document.querySelector('.day');
     if(el) window.scrollTo({ top: el.offsetTop - $('#head').offsetHeight - 4, behavior: 'smooth' });
   }
-  function renderAll(){ renderUpdated(); renderViewSeg(); renderChips(); render(); }
+  function renderAll(){ renderUpdated(); renderViewSeg(); renderChips(); renderGroups(); render(); }
 
   let toastTimer = null;
   function toast(msg, ms){
@@ -380,6 +441,9 @@
     }
     stopScan();
     data = payload;
+    // セットのメンバーは取り込みに含まれないときも保持し、新しく届いた人は自動で追加しない。
+    const group = prefs.groups.find(g => g.id === prefs.activeGroup);
+    if(group) { prefs.hidden = (data.r || []).filter(src => !group.sources.includes(src)); save(PREF_KEY, prefs); }
     const ok = save(DATA_KEY, data);
     showPast = false;
     calMonth = null; calSel = null;
@@ -398,6 +462,12 @@
 
   // ---------- 起動 ----------
   $('#scanBtn').addEventListener('click', startScan);
+  $('#selectAll').addEventListener('click', ()=> selectAllSources(true));
+  $('#deselectAll').addEventListener('click', ()=> selectAllSources(false));
+  $('#displayGroup').addEventListener('change', selectGroup);
+  $('#saveGroup').addEventListener('click', saveGroup);
+  $('#deleteGroup').addEventListener('click', deleteGroup);
+  $('#displayTools').addEventListener('toggle', updateHeadHeight);
   $('#scanCancel').addEventListener('click', stopScan);
   $('#todayBtn').addEventListener('click', scrollToToday);
   $('#search').addEventListener('input', e=>{ query = e.target.value; render(); });
@@ -421,3 +491,4 @@
   renderAll();
   if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 })();
+
