@@ -160,13 +160,15 @@
     <div class="chips" id="chips" role="group" aria-label="表示する人とグループ"></div>
     <button class="chip" id="openChipOrder" type="button" hidden>並べ替え</button>
   </div>
-  <details class="display-tools" id="displayTools" hidden>
-    <summary>表示する人・表示セット</summary>
-    <div class="display-row">
+  <div id="selectionTools" hidden>
+    <div class="display-row" role="group" aria-label="表示する人の一括選択">
       <button id="selectAll" type="button">全選択</button>
       <button id="deselectAll" type="button">全選択解除</button>
       <span id="selectionCount" class="display-help" aria-live="polite"></span>
     </div>
+  </div>
+  <details class="display-tools" id="displayTools" hidden>
+    <summary>表示する人・表示セット</summary>
     <div class="display-row">
       <select id="displayGroup" aria-label="表示セット"><option value="">セットを選ぶ</option></select>
       <button id="newGroup" type="button">新しいセット</button>

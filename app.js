@@ -158,6 +158,7 @@
   }
   function renderGroups(resetName = false){
     $('#displayTools').hidden = !data;
+    $('#selectionTools').hidden = !data;
     $('#openChipOrder').hidden = !data;
     if(!data) return;
     const sources = data.r || [];

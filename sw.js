@@ -1,5 +1,5 @@
 // オフラインでも開けるよう、アプリ本体をスマホに保存しておく(予定データはここでは扱わない)
-const CACHE = 'yotei-viewer-v5';
+const CACHE = 'yotei-viewer-v6';
 const FILES = ['./', 'index.html', 'app.js', 'jsQR.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
