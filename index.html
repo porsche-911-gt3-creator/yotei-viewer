@@ -51,6 +51,9 @@
   .seg button[aria-pressed="true"]{ background:var(--card); color:var(--ink); font-weight:700; box-shadow:0 1px 3px rgba(0,0,0,.12); }
   .chips{ display:flex; gap:6px; overflow-x:auto; margin-top:8px; padding-bottom:2px; scrollbar-width:none; }
   .chips::-webkit-scrollbar{ display:none; }
+  .source-bar{ display:flex; gap:6px; align-items:flex-start; }
+  .source-bar .chips{ flex:1; min-width:0; }
+  #openChipOrder{ margin-top:8px; }
   .chip{ flex:0 0 auto; border:1px solid var(--line); background:var(--card); border-radius:999px;
     padding:6px 12px; font-size:13px; display:flex; align-items:center; gap:6px; min-height:34px; }
   .chip .dot{ width:8px; height:8px; border-radius:50%; }
@@ -64,8 +67,7 @@
   .display-row select, .display-row input{ flex:1; min-width:140px; font-size:16px; }
   .display-row button:disabled{ opacity:.45; }
   .display-help{ font-size:12px; color:var(--sub); margin:4px 0; line-height:1.5; }
-  .group-shortcuts{ display:flex; gap:6px; margin-top:8px; overflow-x:auto; padding-bottom:2px; }
-  .group-shortcuts .chip[aria-pressed="true"]{ border-color:var(--accent); background:var(--accent); color:var(--accent-ink); }
+  .group-chip[aria-pressed="true"]{ border-color:var(--accent); background:var(--accent); color:var(--accent-ink); }
   .group-order-row{ display:flex; align-items:center; gap:6px; margin:6px 0; }
   .group-order-row .group-pick{ flex:1; min-width:0; text-align:left; overflow-wrap:anywhere; }
   .search{ margin-top:8px; width:100%; border:1px solid var(--line); background:var(--card); color:var(--ink);
@@ -154,8 +156,10 @@
       <button type="button" data-view="cal" aria-pressed="false">カレンダー</button>
     </div>
   </div>
-  <div class="chips" id="chips"></div>
-  <div class="group-shortcuts" id="groupShortcuts" role="group" aria-label="保存した表示セット"></div>
+  <div class="source-bar">
+    <div class="chips" id="chips" role="group" aria-label="表示する人とグループ"></div>
+    <button class="chip" id="openChipOrder" type="button" hidden>並べ替え</button>
+  </div>
   <details class="display-tools" id="displayTools" hidden>
     <summary>表示する人・表示セット</summary>
     <div class="display-row">
@@ -173,7 +177,7 @@
       <button id="saveGroup" type="button">保存</button>
     </div>
     <p class="display-help">表示したい人を選び、名前を付けて保存できます。保存済みセットを選ぶと、表示する人が切り替わります。</p>
-    <div id="groupOrder" aria-label="表示セットの並べ替え"></div>
+    <div id="groupOrder" aria-label="人とグループの並べ替え"></div>
   </details>
   <input class="search" id="search" type="search" placeholder="件名・場所で探す" enterkeyhint="search" autocomplete="off">
 </header>

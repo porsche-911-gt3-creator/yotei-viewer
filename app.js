@@ -85,9 +85,10 @@
 
   let data = load(DATA_KEY);
   if(!validPayload(data)) data = null;
-  const prefs = Object.assign({ hidden: [], view: 'list', groups: [], activeGroup: '' }, load(PREF_KEY) || {});
+  const prefs = Object.assign({ hidden: [], view: 'list', groups: [], activeGroup: '', chipOrder: [] }, load(PREF_KEY) || {});
   if(!Array.isArray(prefs.hidden)) prefs.hidden = [];
   prefs.groups = Array.isArray(prefs.groups) ? prefs.groups.filter(g => g && typeof g.id === 'string' && typeof g.name === 'string' && Array.isArray(g.sources)) : [];
+  if(!Array.isArray(prefs.chipOrder)) prefs.chipOrder = [];
   let calMonth = null;
   let calSel = null;
   let showPast = false;
@@ -123,20 +124,31 @@
     el.textContent = `${when} に更新(${ago})・${data.to.slice(5).replace('-', '/')}まで`;
     el.classList.toggle('stale', hours >= 24);
   }
-  function renderChips(){
-    const wrap = $('#chips');
-    if(!data){ wrap.innerHTML = ''; return; }
-    wrap.innerHTML = (data.r || []).map(src=>{
-      const on = !prefs.hidden.includes(src);
-      return `<button class="chip" type="button" data-src="${esc(src)}" aria-pressed="${on}"><span class="dot" style="background:${sourceColor(src)}"></span>${esc(sourceLabel(src))}</button>`;
-    }).join('');
-    wrap.querySelectorAll('.chip').forEach(b => b.addEventListener('click', ()=>{
+  function displayEntries(){
+    const entries = ((data && data.r) || []).map(src => ({ key: 's:' + src, src, name: sourceLabel(src) }))
+      .concat(prefs.groups.map(g => ({ key: 'g:' + g.id, group: g, name: g.name })));
+    const ranks = new Map(prefs.chipOrder.map((key, i) => [key, i]));
+    return entries.sort((a, b) => (ranks.get(a.key) ?? Infinity) - (ranks.get(b.key) ?? Infinity));
+  }
+  function bindDisplayEntries(wrap){
+    wrap.querySelectorAll('[data-src]').forEach(b => b.addEventListener('click', ()=>{
       const src = b.dataset.src;
       prefs.hidden = prefs.hidden.includes(src) ? prefs.hidden.filter(x => x !== src) : prefs.hidden.concat(src);
       editingGroup = prefs.activeGroup || editingGroup;
       prefs.activeGroup = '';
       saveDisplayPrefs();
     }));
+    wrap.querySelectorAll('[data-group]').forEach(b => b.addEventListener('click', ()=> chooseGroup(b.dataset.group)));
+  }
+  function renderChips(){
+    const wrap = $('#chips');
+    if(!data){ wrap.innerHTML = ''; return; }
+    wrap.innerHTML = displayEntries().map(entry=>{
+      if(entry.group) return `<button class="chip group-chip" type="button" data-group="${esc(entry.group.id)}" aria-pressed="${entry.group.id === prefs.activeGroup}">👥 ${esc(entry.name)}</button>`;
+      const on = !prefs.hidden.includes(entry.src);
+      return `<button class="chip" type="button" data-src="${esc(entry.src)}" aria-pressed="${on}"><span class="dot" style="background:${sourceColor(entry.src)}"></span>${esc(entry.name)}</button>`;
+    }).join('');
+    bindDisplayEntries(wrap);
   }
   function saveDisplayPrefs(){
     const ok = save(PREF_KEY, prefs);
@@ -146,30 +158,35 @@
   }
   function renderGroups(resetName = false){
     $('#displayTools').hidden = !data;
-    $('#groupShortcuts').hidden = !data;
+    $('#openChipOrder').hidden = !data;
     if(!data) return;
     const sources = data.r || [];
     const count = sources.filter(src => !prefs.hidden.includes(src)).length;
     $('#selectionCount').textContent = `${count} / ${sources.length}人を表示${editingGroup ? '・セットの変更は未保存' : ''}`;
     const active = prefs.groups.find(g => g.id === (prefs.activeGroup || editingGroup));
-    $('#displayGroup').innerHTML = '<option value="">個別に選択・新しいセット</option>' + prefs.groups.map(g =>
+    $('#displayGroup').innerHTML = '<option value="">個別に選択・新しいセット</option>' + displayEntries().filter(e => e.group).map(e => e.group).map(g =>
       `<option value="${esc(g.id)}"${active && g.id === active.id ? ' selected' : ''}>${esc(g.name)}</option>`).join('');
     if(resetName) $('#groupName').value = active ? active.name : '';
     $('#saveGroup').textContent = active ? '上書き保存' : '保存';
     $('#deleteGroup').disabled = !active;
-    $('#groupShortcuts').innerHTML = prefs.groups.length ? prefs.groups.map(g =>
-      `<button class="chip" type="button" data-group="${esc(g.id)}" aria-pressed="${g.id === prefs.activeGroup}">${esc(g.name)}</button>`).join('') : '<span class="display-help">表示セットはまだ保存されていません</span>';
-    $('#groupShortcuts').querySelectorAll('[data-group]').forEach(b => b.addEventListener('click', ()=> chooseGroup(b.dataset.group)));
-    $('#groupOrder').innerHTML = prefs.groups.length ? '<p class="display-help">セットの並び順（↑↓で変更・自動保存）</p>' + prefs.groups.map((g, i) =>
-      `<div class="display-row group-order-row"><button class="group-pick" type="button" data-group="${esc(g.id)}">${esc(g.name)}</button><button type="button" data-move="-1" data-id="${esc(g.id)}" aria-label="${esc(g.name)}を上へ"${i === 0 ? ' disabled' : ''}>↑</button><button type="button" data-move="1" data-id="${esc(g.id)}" aria-label="${esc(g.name)}を下へ"${i === prefs.groups.length - 1 ? ' disabled' : ''}>↓</button></div>`).join('') : '';
-    $('#groupOrder').querySelectorAll('[data-group]').forEach(b => b.addEventListener('click', ()=> chooseGroup(b.dataset.group)));
+    const entries = displayEntries();
+    $('#groupOrder').innerHTML = '<p class="display-help">人・グループの並び順（↑↓で変更・自動保存）</p>' + entries.map((entry, i) => {
+      const target = entry.group ? `data-group="${esc(entry.group.id)}"` : `data-src="${esc(entry.src)}"`;
+      const label = (entry.group ? '👥 ' : '') + entry.name;
+      return `<div class="display-row group-order-row"><button class="group-pick" type="button" ${target}>${esc(label)}</button><button type="button" data-move="-1" data-key="${esc(entry.key)}" aria-label="${esc(entry.name)}を上へ"${i === 0 ? ' disabled' : ''}>↑</button><button type="button" data-move="1" data-key="${esc(entry.key)}" aria-label="${esc(entry.name)}を下へ"${i === entries.length - 1 ? ' disabled' : ''}>↓</button></div>`;
+    }).join('');
+    bindDisplayEntries($('#groupOrder'));
     $('#groupOrder').querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', ()=>{
-      const i = prefs.groups.findIndex(g => g.id === b.dataset.id), next = i + Number(b.dataset.move);
-      if(i < 0 || next < 0 || next >= prefs.groups.length) return;
-      [prefs.groups[i], prefs.groups[next]] = [prefs.groups[next], prefs.groups[i]];
+      const order = displayEntries().map(e => e.key);
+      const i = order.indexOf(b.dataset.key), next = i + Number(b.dataset.move);
+      if(i < 0 || next < 0 || next >= order.length) return;
+      [order[i], order[next]] = [order[next], order[i]];
+      // 今回のQRに含まれない人のキーも保持する。
+      prefs.chipOrder = order.concat(prefs.chipOrder.filter(key => !order.includes(key)));
       saveDisplayPrefs();
     }));
   }
+
   function selectAllSources(on){
     if(!data) return;
     prefs.hidden = on ? [] : (data.r || []).slice();
@@ -487,6 +504,10 @@
   $('#saveGroup').addEventListener('click', saveGroup);
   $('#deleteGroup').addEventListener('click', deleteGroup);
   $('#displayTools').addEventListener('toggle', updateHeadHeight);
+  $('#openChipOrder').addEventListener('click', ()=>{
+    $('#displayTools').open = true;
+    requestAnimationFrame(()=> $('#groupOrder').scrollIntoView({ block: 'nearest' }));
+  });
   $('#scanCancel').addEventListener('click', stopScan);
   $('#todayBtn').addEventListener('click', scrollToToday);
   $('#search').addEventListener('input', e=>{ query = e.target.value; render(); });
