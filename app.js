@@ -242,6 +242,7 @@
   function renderGroups(resetName = false){
     $('#displayTools').hidden = !data;
     $('#selectionTools').hidden = !data;
+    $('#exportBtn').hidden = !data;
     $('#openChipOrder').hidden = !data;
     if(!data) return;
     const sources = data.r || [];
@@ -578,9 +579,67 @@
     scanning = null;
   }
 
+  // ---------- テキスト書き出し ----------
+  function buildExportText(){
+    const shown = (data.r || []).filter(src => !prefs.hidden.includes(src));
+    const head = [
+      '【予定ビューア 書き出し】',
+      `範囲：${data.f}〜${data.to}`,
+      `対象：${shown.map(sourceLabel).join('・') || 'なし'}（表示中の人）`,
+      `書き出し日時：${new Date().toLocaleString('ja-JP')}`,
+      ''
+    ];
+    const rows = data.e
+      .filter(e => !prefs.hidden.includes(e[0]))
+      .slice()
+      .sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) || String(a[3] || '').localeCompare(String(b[3] || '')));
+    let cur = '';
+    rows.forEach(e => {
+      const [src, d1, d2, t1, t2, title, loc, note, flags] = e;
+      if(d1 !== cur){
+        cur = d1;
+        const w = WD[parse(d1).getDay()];
+        head.push(`■${d1}（${w}）`);
+      }
+      const fl = String(flags || '');
+      let when = t1 ? `${t1}${t2 ? `〜${t2}` : '〜'}` : (fl.includes('l') ? '休暇' : fl.includes('t') ? 'ToDo' : '終日');
+      if(d2 && d2 !== d1) when = `${d1}〜${d2} ${when}`;
+      const tags = [fl.includes('d') ? '完了' : '', fl.includes('t') && t1 ? 'ToDo' : ''].filter(Boolean).join('・');
+      const parts = [sourceLabel(src), when, title || '(件名なし)'];
+      if(loc) parts.push(`場所：${loc}`);
+      if(note) parts.push(`メモ：${note}`);
+      if(tags) parts.push(`（${tags}）`);
+      head.push(parts.join(' | '));
+    });
+    if(!rows.length) head.push('（表示中の人の予定はありません）');
+    return head.join('\n');
+  }
+  function openExport(){
+    if(!data){ toast('まだ予定を取り込んでいません'); return; }
+    $('#exportText').value = buildExportText();
+    $('#exportDlg').style.display = 'flex';
+  }
+  function closeExport(){ $('#exportDlg').style.display = 'none'; }
+  async function copyExport(){
+    const ta = $('#exportText');
+    ta.focus(); ta.select();
+    try{
+      await navigator.clipboard.writeText(ta.value);
+      toast('コピーしました。Muse のチャットに貼り付けてください。', 3500);
+    }catch(e){
+      let ok = false;
+      try{ ok = document.execCommand('copy'); }catch(_){ ok = false; }
+      toast(ok ? 'コピーしました。Muse のチャットに貼り付けてください。' : 'コピーできませんでした。テキストを選んでコピーしてください。', 4000);
+    }
+  }
+
   // ---------- 起動 ----------
   bindChipDrag();
   $('#scanBtn').addEventListener('click', startScan);
+  $('#exportBtn').addEventListener('click', openExport);
+  $('#exportClose').addEventListener('click', closeExport);
+  $('#exportCopy').addEventListener('click', copyExport);
+  $('#exportDlg').addEventListener('click', e=>{ if(e.target === e.currentTarget) closeExport(); });
   $('#selectAll').addEventListener('click', ()=> selectAllSources(true));
   $('#deselectAll').addEventListener('click', ()=> selectAllSources(false));
   $('#displayGroup').addEventListener('change', selectGroup);
